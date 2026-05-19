@@ -30,7 +30,7 @@ export covariance_from_moments, variance_from_moments
 export blockwise_product_mean, blockwise_product_moments
 
 # Multi-resolution planning
-export factor_sequence, build_multires_plan
+export factor_sequence, build_multires_plan, build_optimal_multires_plan
 export execute_cached_multilevel, multiresolution_stats
 export CachedMultiLevelExecution
 

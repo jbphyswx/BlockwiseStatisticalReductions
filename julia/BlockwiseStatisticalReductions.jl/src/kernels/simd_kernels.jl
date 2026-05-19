@@ -21,7 +21,7 @@ function simd_blockwise_mean!(
     out_dims = size(out)
     
     # Main loop over output blocks
-    @inbounds for I in CartesianIndices(out)
+    Base.@inbounds for I in CartesianIndices(out)
         # Compute block start indices
         start_idx = ntuple(i -> (I[i] - 1) * window_sizes[i] + 1, N)
         
@@ -35,7 +35,7 @@ function simd_blockwise_mean!(
         # Manual loop for SIMD
         if N == 3
             i0, j0, k0 = start_idx
-            @fastmath @turbo for kk in 0:window_sizes[3]-1
+            LoopVectorization.@fastmath LoopVectorization.@turbo for kk in 0:window_sizes[3]-1
                 for jj in 0:window_sizes[2]-1
                     for ii in 0:window_sizes[1]-1
                         s += data[i0+ii, j0+jj, k0+kk]
@@ -45,7 +45,7 @@ function simd_blockwise_mean!(
             count = window_sizes[1] * window_sizes[2] * window_sizes[3]
         elseif N == 2
             i0, j0 = start_idx
-            @fastmath @turbo for jj in 0:window_sizes[2]-1
+            LoopVectorization.@fastmath LoopVectorization.@turbo for jj in 0:window_sizes[2]-1
                 for ii in 0:window_sizes[1]-1
                     s += data[i0+ii, j0+jj]
                 end
@@ -80,7 +80,7 @@ function simd_blockwise_variance!(
     out_dims = size(out)
     block_size = prod(window_sizes)
     
-    @inbounds for I in CartesianIndices(out)
+    Base.@inbounds for I in CartesianIndices(out)
         start_idx = ntuple(i -> (I[I] - 1) * window_sizes[i] + 1, N)
         
         # Welford accumulators
@@ -92,10 +92,10 @@ function simd_blockwise_variance!(
         if N == 3
             i0, j0, k0 = start_idx
             # Process in chunks for better SIMD utilization
-            @fastmath for kk in 0:window_sizes[3]-1
+            LoopVectorization.@fastmath for kk in 0:window_sizes[3]-1
                 for jj in 0:window_sizes[2]-1
                     # Inner loop vectorized
-                    @simd for ii in 0:window_sizes[1]-1
+                    LoopVectorization.@simd for ii in 0:window_sizes[1]-1
                         x = data[i0+ii, j0+jj, k0+kk]
                         n += 1
                         delta = x - mean
@@ -141,7 +141,7 @@ function simd_product_mean!(
     out_dims = size(out)
     block_size = prod(window_sizes)
     
-    @inbounds for I in CartesianIndices(out)
+    Base.@inbounds for I in CartesianIndices(out)
         start_idx = ntuple(i -> (I[i] - 1) * window_sizes[i] + 1, N)
         
         s = zero(T)
@@ -149,7 +149,7 @@ function simd_product_mean!(
         # SIMD vectorized accumulation
         if N == 3
             i0, j0, k0 = start_idx
-            @fastmath @turbo for kk in 0:window_sizes[3]-1
+            LoopVectorization.@fastmath LoopVectorization.@turbo for kk in 0:window_sizes[3]-1
                 for jj in 0:window_sizes[2]-1
                     for ii in 0:window_sizes[1]-1
                         s += x[i0+ii, j0+jj, k0+kk] * y[i0+ii, j0+jj, k0+kk]
@@ -190,7 +190,7 @@ function simd_product_moments!(
     out_dims = size(mean_x)
     block_size = prod(window_sizes)
     
-    @inbounds for I in CartesianIndices(out_dims)
+    Base.@inbounds for I in CartesianIndices(out_dims)
         start_idx = ntuple(i -> (I[i] - 1) * window_sizes[i] + 1, N)
         
         # Welford accumulators
@@ -202,9 +202,9 @@ function simd_product_moments!(
         # SIMD vectorized
         if N == 3
             i0, j0, k0 = start_idx
-            @fastmath for kk in 0:window_sizes[3]-1
+            LoopVectorization.@fastmath for kk in 0:window_sizes[3]-1
                 for jj in 0:window_sizes[2]-1
-                    @simd for ii in 0:window_sizes[1]-1
+                    LoopVectorization.@simd for ii in 0:window_sizes[1]-1
                         xv = x[i0+ii, j0+jj, k0+kk]
                         yv = y[i0+ii, j0+jj, k0+kk]
                         

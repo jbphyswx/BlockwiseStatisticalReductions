@@ -94,16 +94,20 @@ Base.length(iter::RollingViewIterator{T,N}) where {T,N} = prod(iter.out_dims)
 Base.eltype(::Type{RollingViewIterator{T,N,A,C}}) where {T,N,A,C} = Tuple{SubArray{T,N,A},Dict{Symbol,Any}}
 
 function Base.iterate(iter::RollingViewIterator{T,N}, state=ntuple(i->0, N)) where {T,N}
-    # state holds current multi-dimensional index in output space
+    # state holds current multi-dimensional index in output space (0-based)
     total = length(iter)
-    linear_idx = LinearIndices(iter.out_dims)[state...] + 1  # +1 because state starts at 0
-    linear_idx > total && return nothing
     
     # Calculate output index
     if state[1] == 0
-        # First iteration
+        # First iteration - start at index 1
         out_idx = ntuple(i -> 1, N)
+        linear_idx = 1
     else
+        # Convert 0-based state to 1-based linear index
+        # state is (i, j, k) in 0..(out_dim-1)
+        linear_idx = LinearIndices(iter.out_dims)[state...]
+        linear_idx += 1  # Move to next position
+        linear_idx > total && return nothing
         out_idx = CartesianIndices(iter.out_dims)[linear_idx].I
     end
     
@@ -132,7 +136,9 @@ function Base.iterate(iter::RollingViewIterator{T,N}, state=ntuple(i->0, N)) whe
             clamp(c, 1, iter.array_size[i])
         end,
         :out_index => out_idx,
-        :window_size => size(view_obj)
+        :window_size => size(view_obj),
+        :output_shape => iter.out_dims,
+        :position => out_idx
     )
     
     # Next state

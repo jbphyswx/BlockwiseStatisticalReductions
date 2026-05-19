@@ -52,6 +52,7 @@ function execute(plan::ReductionPlan, array::AbstractArray;
     node_order = topological_sort(plan)
     
     # Execute nodes in order
+    # Use Any to handle both ReductionResult and Vector{ReductionResult} from WindowNodes
     results = Dict{UInt64,Any}()
     
     for node_id in node_order
@@ -63,25 +64,34 @@ function execute(plan::ReductionPlan, array::AbstractArray;
         if isempty(input_ids)
             # Input node - use the original array
             result = execute_node(node, array, backend, cache)
+        elseif length(input_ids) == 1
+            # Single input - pass directly
+            parent_result = results[only(input_ids)]
+            result = execute_node(node, parent_result, backend, cache)
         else
-            # Use cached results as input
-            inputs = [results[id] for id in input_ids]
-            if length(inputs) == 1
-                result = execute_node(node, inputs[1], backend, cache)
-            else
-                result = execute_node(node, inputs, backend, cache)
-            end
+            # Multiple inputs - use function barrier
+            result = _execute_multi_input(node, input_ids, results, backend, cache)
         end
         
         results[node_id] = result
         
-        # Cache the result
-        key = cache_key(node, size(result))
-        store!(cache.storage, key, result)
+        # Only cache ReductionResult (not Vector{ReductionResult} from WindowNodes)
+        if result isa ReductionResult
+            key = cache_key(node, size(result.data))
+            store!(cache.storage, key, result)
+        end
     end
     
-    # Return results for output nodes
-    output_results = [results[id] for id in plan.outputs]
+    # Return results for output nodes (outputs should always be StatsNodes)
+    output_results = ReductionResult[]
+    for id in plan.outputs
+        res = results[id]
+        if res isa ReductionResult
+            push!(output_results, res)
+        else
+            error("Output node $id did not return ReductionResult")
+        end
+    end
     return output_results
 end
 
@@ -152,7 +162,7 @@ function execute_node(node::WindowNode, input::AbstractArray, backend, cache)
     iter = rolling_views(input, node.config)
     
     # Collect all window results with metadata
-    results = []
+    results = ReductionResult[]
     for (view, meta) in iter
         push!(results, ReductionResult(view, meta))
     end
@@ -160,9 +170,9 @@ function execute_node(node::WindowNode, input::AbstractArray, backend, cache)
     return results
 end
 
-function execute_node(node::WindowNode, input::Vector, backend, cache)
+function execute_node(node::WindowNode, input::Vector{ReductionResult}, backend, cache)
     # Handle nested windows (apply to each previous result)
-    all_results = []
+    all_results = ReductionResult[]
     for item in input
         if item isa ReductionResult
             arr = item.data
@@ -186,9 +196,10 @@ end
 
 Execute a statistics node.
 """
-function execute_node(node::StatsNode, input::AbstractArray, backend, cache)
+function execute_node(node::StatsNode{S}, input::AbstractArray, backend, cache) where S
     # Single array - compute stat directly
-    stat = node.stat_type
+    # S is a Symbol from Val{S} in the node type
+    stat = create_stat(S, eltype(input))
     fit_window!(stat, input)
     
     metadata = Dict{Symbol,Any}(
@@ -196,24 +207,59 @@ function execute_node(node::StatsNode, input::AbstractArray, backend, cache)
         :stat_type => typeof(stat)
     )
     
-    return ReductionResult(value(stat), metadata)
+    return ReductionResult(OnlineStats.value(stat), metadata)
 end
 
-function execute_node(node::StatsNode, input::Vector{ReductionResult}, backend, cache)
-    # Multiple window results - compute stat for each
-    results = []
-    for item in input
-        stat = deepcopy(node.stat_type)
+function execute_node(node::StatsNode{S}, input::Vector{ReductionResult}, backend, cache) where S
+    # Multiple window results - compute stat for each and assemble into reduced array
+    # Get output dimensions from first result's metadata
+    out_shape = input[1].metadata[:output_shape]
+    T = eltype(input[1].data)
+    
+    # Pre-allocate output array
+    output = similar(input[1].data, T, out_shape)
+    
+    # Compute statistic for each window and place in output array
+    for (idx, item) in enumerate(input)
+        # Get output position from metadata
+        pos = item.metadata[:position]
+        
+        # Compute statistic
+        stat = create_stat(S, T)
         fit_window!(stat, item.data)
         
-        combined_meta = merge(item.metadata, Dict(
-            :stat_value => value(stat),
-            :stat_type => typeof(stat)
-        ))
-        
-        push!(results, ReductionResult(value(stat), combined_meta))
+        # Place in output array
+        output[pos...] = OnlineStats.value(stat)
     end
-    return results
+    
+    metadata = Dict{Symbol,Any}(
+        :input_shape => size(input[1].data),
+        :output_shape => out_shape,
+        :stat_type => S
+    )
+    
+    return ReductionResult(output, metadata)
+end
+
+function execute_node(node::StatsNode{S}, input::Vector{Any}, backend, cache) where S
+    # Handle Vector{Any} from execution engine
+    # Check if all elements are ReductionResult
+    if all(x -> x isa ReductionResult, input)
+        return execute_node(node, ReductionResult[input...], backend, cache)
+    else
+        error("StatsNode received Vector{Any} with non-ReductionResult elements")
+    end
+end
+
+"""
+    _execute_multi_input(node, input_ids, results, backend, cache)
+
+Function barrier for multiple inputs to maintain type stability.
+"""
+function _execute_multi_input(node, input_ids, results, backend, cache)
+    # Collect inputs - this is type-unstable but isolated in function barrier
+    inputs = Any[results[id] for id in input_ids]
+    return execute_node(node, inputs, backend, cache)
 end
 
 """

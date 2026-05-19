@@ -49,14 +49,17 @@ struct WindowNode{C<:WindowConfig} <: AbstractPlanNode
 end
 
 """
-    StatsNode{O}
+    StatsNode{S}
 
 Plan node representing a statistical reduction.
+Type parameter S is a Symbol stored as Val{S} for type stability.
 """
-struct StatsNode{O} <: AbstractPlanNode
-    stat_type::O
+struct StatsNode{S} <: AbstractPlanNode
+    stat_type::Val{S}
     dims::Union{Colon,Vector{Int}}
     id::UInt64
+    
+    StatsNode(stat_type::Val{S}, dims, id) where S = new{S}(stat_type, dims, id)
 end
 
 """
@@ -96,7 +99,7 @@ end
 
 Graph structure representing a tree of reduction operations.
 """
-struct ReductionPlan
+mutable struct ReductionPlan
     nodes::Vector{AbstractPlanNode}
     edges::Dict{UInt64,Vector{UInt64}}
     inputs::Vector{UInt64}

@@ -1,4 +1,4 @@
-@testset "MemoryStorage" begin
+Test.@testset "MemoryStorage" begin
     storage = MemoryStorage()
     
     # Store and retrieve
@@ -6,29 +6,29 @@
     value = [1, 2, 3]
     
     BlockwiseStatisticalReductions.store!(storage, key, value)
-    @test haskey(storage, key)
+    Test.@test haskey(storage, key)
     
     retrieved = BlockwiseStatisticalReductions.retrieve(storage, key)
-    @test retrieved == value
+    Test.@test retrieved == value
     
     # Non-existent key
-    @test !haskey(storage, UInt64(999))
-    @test BlockwiseStatisticalReductions.retrieve(storage, UInt64(999)) === nothing
+    Test.@test !haskey(storage, UInt64(999))
+    Test.@test BlockwiseStatisticalReductions.retrieve(storage, UInt64(999)) === nothing
 end
 
-@testset "MemoryStorage with max_size" begin
+Test.@testset "MemoryStorage with max_size" begin
     storage = MemoryStorage(max_size=1000)
-    @test storage.max_size == 1000
+    Test.@test storage.max_size == 1000
     
     # Store multiple items
     for i in 1:10
         BlockwiseStatisticalReductions.store!(storage, UInt64(i), rand(100))
     end
     
-    @test length(storage.cache) == 10
+    Test.@test length(storage.cache) == 10
 end
 
-@testset "DiskStorage (serialization)" begin
+Test.@testset "DiskStorage (serialization)" begin
     mktempdir() do dir
         storage = DiskStorage(dir; format=:serialization)
         
@@ -38,28 +38,28 @@ end
         metadata = Dict(:timestamp => time())
         
         filename = BlockwiseStatisticalReductions.store!(storage, key, value, metadata)
-        @test isfile(filename)
-        @test haskey(storage, key)
+        Test.@test isfile(filename)
+        Test.@test haskey(storage, key)
         
         # Retrieve
         retrieved = BlockwiseStatisticalReductions.retrieve(storage, key)
-        @test retrieved["array"] == value["array"]
+        Test.@test retrieved["array"] == value["array"]
         
         # Non-existent key
-        @test !haskey(storage, UInt64(999))
-        @test BlockwiseStatisticalReductions.retrieve(storage, UInt64(999)) === nothing
+        Test.@test !haskey(storage, UInt64(999))
+        Test.@test BlockwiseStatisticalReductions.retrieve(storage, UInt64(999)) === nothing
     end
 end
 
-@testset "clear! storage" begin
+Test.@testset "clear! storage" begin
     # Memory
     mem = MemoryStorage()
     BlockwiseStatisticalReductions.store!(mem, UInt64(1), "test")
-    @test haskey(mem, UInt64(1))
+    Test.@test haskey(mem, UInt64(1))
     
     BlockwiseStatisticalReductions.clear!(mem)
-    @test !haskey(mem, UInt64(1))
-    @test isempty(mem.cache)
+    Test.@test !haskey(mem, UInt64(1))
+    Test.@test isempty(mem.cache)
     
     # Disk
     mktempdir() do dir
@@ -67,12 +67,12 @@ end
         BlockwiseStatisticalReductions.store!(disk, UInt64(1), "test")
         
         BlockwiseStatisticalReductions.clear!(disk)
-        @test isempty(disk.cache)
-        @test isempty(readdir(dir))
+        Test.@test isempty(disk.cache)
+        Test.@test isempty(readdir(dir))
     end
 end
 
-@testtestset "DiskStorage roundtrip with complex data" begin
+Test.@testset "DiskStorage roundtrip with complex data" begin
     mktempdir() do dir
         storage = DiskStorage(dir; format=:serialization)
         
@@ -88,8 +88,8 @@ end
         BlockwiseStatisticalReductions.store!(storage, key, data)
         
         retrieved = BlockwiseStatisticalReductions.retrieve(storage, key)
-        @test retrieved[:matrix] == data[:matrix]
-        @test retrieved[:vector] == data[:vector]
-        @test retrieved[:nested][:a] == 1
+        Test.@test retrieved[:matrix] == data[:matrix]
+        Test.@test retrieved[:vector] == data[:vector]
+        Test.@test retrieved[:nested][:a] == 1
     end
 end

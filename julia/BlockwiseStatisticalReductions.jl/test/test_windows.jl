@@ -1,4 +1,4 @@
-@testset "rolling_views" begin
+Test.@testset "rolling_views" begin
     # 1D array
     arr1d = 1:100
     
@@ -6,77 +6,77 @@
     cfg1 = WindowConfig((10,))
     iter1 = rolling_views(arr1d, cfg1)
     results1 = collect(iter1)
-    @test length(results1) == 91  # 100 - 10 + 1
+    Test.@test length(results1) == 91  # 100 - 10 + 1
     
     # Check first window
     view1, meta1 = results1[1]
-    @test vec(view1) == 1:10
-    @test meta1[:indices] == (1:10,)
-    @test meta1[:center] == (5,)
+    Test.@test vec(view1) == 1:10
+    Test.@test meta1[:indices] == (1:10,)
+    Test.@test meta1[:center] == (5,)
     
     # Check last window
     view_last, meta_last = results1[end]
-    @test vec(view_last) == 91:100
-    @test meta1[:out_index] == (1,)
+    Test.@test vec(view_last) == 91:100
+    Test.@test meta1[:out_index] == (1,)
     
     # 2D array
     arr2d = reshape(1:100, (10, 10))
     cfg2 = WindowConfig((3, 3))
     iter2 = rolling_views(arr2d, cfg2)
     results2 = collect(iter2)
-    @test length(results2) == 64  # (10-3+1)^2
+    Test.@test length(results2) == 64  # (10-3+1)^2
     
     # With stride
     cfg_stride = WindowConfig((5, 5), (5, 5), :valid)
     iter_stride = rolling_views(arr2d, cfg_stride)
     results_stride = collect(iter_stride)
-    @test length(results_stride) == 4  # 2x2 grid
+    Test.@test length(results_stride) == 4  # 2x2 grid
     
     # Check metadata
     view_s, meta_s = results_stride[1]
-    @test meta_s[:window_size] == (5, 5)
+    Test.@test meta_s[:window_size] == (5, 5)
 end
 
-@testset "tiled_blocks" begin
+Test.@testset "tiled_blocks" begin
     arr2d = reshape(1:100, (10, 10))
     
     # 2x2 tiles
     iter = tiled_blocks(arr2d, (5, 5))
     results = collect(iter)
-    @test length(results) == 4
+    Test.@test length(results) == 4
     
     # Check tile contents
-    @test vec(results[1][1]) == 1:5:46  # First tile (column-major)
-    @test vec(results[4][1]) == 10:5:55  # Last tile
+    Test.@test vec(results[1][1]) == 1:5:46  # First tile (column-major)
+    Test.@test vec(results[4][1]) == 10:5:55  # Last tile
     
     # Different tile sizes (NxM, not just NxN)
     iter2 = tiled_blocks(arr2d, (2, 5))
     results2 = collect(iter2)
-    @test length(results2) == 10  # 5 x 2
+    Test.@test length(results2) == 10  # 5 x 2
 end
 
-@testset "window edge cases" begin
+Test.@testset "window edge cases" begin
     # Window larger than array
     arr = 1:5
     cfg = WindowConfig((10,), (1,), :valid)
     iter = rolling_views(arr, cfg)
-    @test length(iter) == 0
+    Test.@test length(iter) == 0
     
     # Same padding
     arr = 1:10
     cfg_same = WindowConfig((5,), (1,), :same)
     iter_same = rolling_views(arr, cfg_same)
     results_same = collect(iter_same)
-    @test length(results_same) == 10
+    Test.@test length(results_same) == 10
     
     # Full padding
     cfg_full = WindowConfig((3,), (1,), :full)
     iter_full = rolling_views(arr, cfg_full)
     results_full = collect(iter_full)
-    @test length(results_full) == 12  # 10 + 3 - 1
+    Test.@test length(results_full) == 12  # 10 + 3 - 1
 end
 
-@testset "apply_windowed" begin
+Test.@testset "apply_windowed" begin
     arr = reshape(1:100, (10, 10))
     cfg = WindowConfig((3, 3), (3, 3), :valid)
     
@@ -85,37 +85,37 @@ end
         mean(view)
     end
     
-    @test length(results) == 9  # 3x3 grid of 3x3 windows
-    @test all(r isa Real for r in results)
+    Test.@test length(results) == 9  # 3x3 grid of 3x3 windows
+    Test.@test all(r isa Real for r in results)
     
     # With tree reduction
     total = apply_windowed(arr, cfg; combine=+) do view, meta
         sum(view)
     end
-    @test total isa Real
-    @test total > 0
+    Test.@test total isa Real
+    Test.@test total > 0
 end
 
-@testset "tree_reduce_impl" begin
+Test.@testset "tree_reduce_impl" begin
     items = collect(1:8)
     
     # Sum reduction
     result = BlockwiseStatisticalReductions.tree_reduce_impl(items, +, CPUBackend(1))
-    @test result == 36  # sum(1:8)
+    Test.@test result == 36  # sum(1:8)
     
     # With multi-threading
     if Threads.nthreads() > 1
         result_mt = BlockwiseStatisticalReductions.tree_reduce_impl(items, +, CPUBackend())
-        @test result_mt == 36
+        Test.@test result_mt == 36
     end
     
     # Single element
     single = [42]
     result_single = BlockwiseStatisticalReductions.tree_reduce_impl(single, +, CPUBackend())
-    @test result_single == 42
+    Test.@test result_single == 42
     
     # Empty
     empty_arr = Int[]
     result_empty = BlockwiseStatisticalReductions.tree_reduce_impl(empty_arr, +, CPUBackend())
-    @test result_empty === nothing
+    Test.@test result_empty === nothing
 end

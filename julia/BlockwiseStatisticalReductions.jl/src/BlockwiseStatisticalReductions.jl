@@ -18,13 +18,57 @@ export stats, rolling_window, tree_reduce
 export fork, merge_branches!, parallel_reduce
 export tiled_stats, tiled_stats_merge
 
+# New mergeable statistics
+export MergeableStatistic, VarianceAccumulator, CovarianceAccumulator, RawMomentsAccumulator
+export merge, merge_many, merge_all
+export fit!, nobs
+
+# Product coarsening
+export product_mean, product_moments, product_variance
+export JointMomentsResult
+export covariance_from_moments, variance_from_moments
+export blockwise_product_mean, blockwise_product_moments
+
+# Multi-resolution planning
+export factor_sequence, build_multires_plan
+export execute_cached_multilevel, multiresolution_stats
+export CachedMultiLevelExecution
+
+# Buffer pool
+export BufferPool, LevelBufferPool
+export acquire!, release!, with_buffer!
+export register_level!, acquire_level!, release_level!
+export create_buffer_pool_for_factors
+
+# Hybrid mode
+export HybridReductionSpec, HybridReductionResult
+export execute_hybrid, hybrid_reduction
+
+# Public API
+export blockwise_stats, blockwise_mean, blockwise_variance, blockwise_std
+export blockwise_covariance, blockwise_moments
+
 include("types.jl")
 include("backends.jl")
 include("storage.jl")
 include("cache.jl")
 include("windows.jl")
 include("statistics/stats.jl")
+include("statistics/core.jl")
+include("statistics/parallel_merge.jl")
+include("statistics/product_reductions.jl")
 include("plan.jl")
+include("plan_multires.jl")
+include("execution/buffer_pool.jl")
+include("hybrid_mode.jl")
+include("public_api.jl")
+
+# Optimization kernels
+include("kernels/simd_kernels.jl")
+
+# Distributed scheduling
+include("execution/distributed_scheduler.jl")
+
 include("execution.jl")
 
 end

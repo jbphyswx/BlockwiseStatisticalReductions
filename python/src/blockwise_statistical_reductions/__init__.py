@@ -7,6 +7,8 @@ This package provides:
 - Dask integration for parallel/distributed computing
 - Xarray integration for labeled arrays with coordinates
 - Numba/JAX optimized kernels
+- Multi-resolution reductions with automatic caching
+- Product coarsening (<x*y> without intermediate allocation)
 """
 
 __version__ = "0.1.0"
@@ -33,6 +35,28 @@ from .dask_integration import (
     dask_tree_reduce,
     create_dask_plan,
     execute_dask_plan,
+)
+
+# Multi-resolution Dask
+from .dask_multires import (
+    MultiResolutionDask,
+    dask_multiresolution_stats,
+    factor_sequence,
+)
+
+# Numba kernels (low-level)
+from ._numba_kernels import (
+    blockwise_mean,
+    blockwise_variance,
+    product_mean,
+    product_moments,
+)
+
+# Accumulators (for advanced users)
+from ._accumulators import (
+    VarianceAccumulator,
+    CovarianceAccumulator,
+    RawMomentsAccumulator,
 )
 
 # Xarray integration
@@ -69,6 +93,19 @@ __all__ = [
     "dask_tree_reduce",
     "create_dask_plan",
     "execute_dask_plan",
+    # Multi-resolution
+    "MultiResolutionDask",
+    "dask_multiresolution_stats",
+    "factor_sequence",
+    # Numba kernels
+    "blockwise_mean",
+    "blockwise_variance",
+    "product_mean",
+    "product_moments",
+    # Accumulators
+    "VarianceAccumulator",
+    "CovarianceAccumulator",
+    "RawMomentsAccumulator",
     # Xarray
     "xr_rolling_stats",
     "xr_blockwise_stats",

@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "blockwise-statistical-reductions"
+version = "0.1.0"
+description = "N-dimensional blockwise and rolling-window statistical reductions with Dask and Xarray support"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Jordan Benjamin"},
+]
+keywords = ["statistics", "reductions", "blockwise", "rolling", "dask", "xarray", "parallel"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "numpy>=1.24",
+    "numba>=0.58",
+    "dask>=2024.1",
+    "distributed>=2024.1",
+    "xarray>=2024.1",
+    "flox>=0.9",
+    "bottleneck>=1.3",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+jax = ["jax>=0.4", "jaxlib>=0.4"]
+gpu = ["cupy-cuda12x>=12.0"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-xdist>=3.0",
+    "black>=23.0",
+    "ruff>=0.1",
+    "mypy>=1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/jbphyswx/BlockwiseStatisticalReductions"
+Repository = "https://github.com/jbphyswx/BlockwiseStatisticalReductions"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/blockwise_statistical_reductions"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I", "N", "D", "UP", "B", "C4", "SIM"]
+ignore = ["D100", "D104"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true

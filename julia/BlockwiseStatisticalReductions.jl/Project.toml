@@ -7,6 +7,7 @@ authors = ["Jordan Benjamin"]
 projects = ["test", "docs", "benchmarks"]
 
 [deps]
+Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
 Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
 LoopVectorization = "bdcacae8-1622-11e9-2a5c-532679323890"
 OnlineStats = "a15396b6-48d5-5d58-9928-6d29437db91e"
@@ -27,6 +28,7 @@ JLD2Ext = "JLD2"
 OhMyThreadsExt = "OhMyThreads"
 
 [compat]
+Aqua = "0.8.14"
 Distributed = "1.11.0"
 LoopVectorization = "0.12.171"
 OnlineStats = "1.7.3"

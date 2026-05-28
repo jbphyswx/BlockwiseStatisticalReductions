@@ -95,18 +95,41 @@ struct MergeNode{F} <: AbstractPlanNode
 end
 
 """
+    ExecutionStep
+
+Pre-compiled execution step: which node to run and where its inputs come from.
+
+- `node`: The plan node to execute
+- `input_indices`: Indices into the results vector for this node's inputs.
+  Empty means this is a root node (uses the original input array).
+- `result_index`: Where to store this node's output in the results vector.
+"""
+struct ExecutionStep
+    node::AbstractPlanNode
+    input_indices::Vector{Int}
+    result_index::Int
+end
+
+"""
     ReductionPlan
 
 Graph structure representing a tree of reduction operations.
+
+After `finalize_plan`, the `execution_sequence` field contains a pre-compiled
+flat execution order that eliminates all runtime graph traversal overhead.
 """
 mutable struct ReductionPlan
     nodes::Vector{AbstractPlanNode}
     edges::Dict{UInt64,Vector{UInt64}}
     inputs::Vector{UInt64}
     outputs::Vector{UInt64}
+    # Pre-compiled execution sequence (populated by finalize_plan)
+    execution_sequence::Vector{ExecutionStep}
+    output_indices::Vector{Int}
     
     function ReductionPlan()
-        new(AbstractPlanNode[], Dict{UInt64,Vector{UInt64}}(), UInt64[], UInt64[])
+        new(AbstractPlanNode[], Dict{UInt64,Vector{UInt64}}(), UInt64[], UInt64[],
+            ExecutionStep[], Int[])
     end
 end
 

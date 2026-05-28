@@ -18,14 +18,8 @@ end
 
 Execute a reduction plan on an array.
 
-# Arguments
-- `plan::ReductionPlan`: The reduction plan to execute
-- `array::AbstractArray`: Input data
-- `backend::AbstractExecutionBackend`: Execution backend (default: CPUBackend)
-- `cache::PlanCache`: Cache for intermediate results
-- `storage::AbstractStorage`: Storage backend (overrides cache storage if provided)
-- `disk_spill::Bool`: Whether to spill intermediates to disk
-- `disk_dir::String`: Directory for disk spill (default: tempdir)
+Uses the pre-compiled execution sequence for zero-overhead DAG traversal.
+No topological sort, no Dict lookups, no linear scans at runtime.
 
 # Returns
 Vector of `ReductionResult` objects for each output node.
@@ -37,62 +31,115 @@ function execute(plan::ReductionPlan, array::AbstractArray;
                  disk_spill::Bool=false,
                  disk_dir::Union{String,Nothing}=nothing)
     
-    # Validate plan
-    validate(plan)
-    
-    # Setup storage
-    if storage !== nothing
-        cache = PlanCache(storage)
-    elseif disk_spill
-        dir = disk_dir !== nothing ? disk_dir : mktempdir()
-        cache = PlanCache(DiskStorage(dir))
+    # Use pre-compiled fast path if available
+    if !isempty(plan.execution_sequence)
+        return _execute_compiled(plan, array, backend, cache)
     end
     
-    # Topological sort of nodes (simple dependency tracking)
-    node_order = topological_sort(plan)
+    # Fallback: compile on first use (for plans not built via finalize_plan)
+    _compile_execution_sequence!(plan)
+    return _execute_compiled(plan, array, backend, cache)
+end
+
+"""
+    _execute_compiled(plan, array, backend, cache)
+
+Fast execution using pre-compiled sequence. Results stored in a flat Vector
+indexed by step order — no Dict, no hash, no allocation beyond output arrays.
+"""
+function _execute_compiled(plan::ReductionPlan, array::AbstractArray,
+                           backend::AbstractExecutionBackend, cache::PlanCache)
+    seq = plan.execution_sequence
+    n_steps = length(seq)
     
-    # Execute nodes in order
-    # Use Any to handle both ReductionResult and Vector{ReductionResult} from WindowNodes
-    results = Dict{UInt64,Any}()
+    # Flat results vector — one slot per execution step
+    results = Vector{ReductionResult}(undef, n_steps)
     
-    for node_id in node_order
-        node = find_node(plan, node_id)
+    @inbounds for step in seq
+        input_idxs = step.input_indices
         
-        # Get input(s) for this node
-        input_ids = get_inputs(plan, node_id)
-        
-        if isempty(input_ids)
-            # Input node - use the original array
-            result = execute_node(node, array, backend, cache)
-        elseif length(input_ids) == 1
-            # Single input - pass directly
-            parent_result = results[only(input_ids)]
-            result = execute_node(node, parent_result, backend, cache)
+        if isempty(input_idxs)
+            # Root node: operate on original array
+            results[step.result_index] = execute_node(step.node, array, backend, cache)
+        elseif length(input_idxs) == 1
+            # Single parent: pass ReductionResult
+            results[step.result_index] = execute_node(step.node, results[input_idxs[1]], backend, cache)
         else
-            # Multiple inputs - use function barrier
-            result = _execute_multi_input(node, input_ids, results, backend, cache)
-        end
-        
-        results[node_id] = result
-        
-        # Only cache ReductionResult (not Vector{ReductionResult} from WindowNodes)
-        if result isa ReductionResult
-            key = cache_key(node, size(result.data))
-            store!(cache.storage, key, result)
+            # Multiple parents
+            inputs = ReductionResult[results[idx] for idx in input_idxs]
+            results[step.result_index] = execute_node(step.node, inputs, backend, cache)
         end
     end
     
-    # Return results for output nodes (outputs should always be StatsNodes)
-    output_results = ReductionResult[]
-    for id in plan.outputs
-        res = results[id]
-        if res isa ReductionResult
-            push!(output_results, res)
+    # Collect outputs by pre-compiled indices
+    return ReductionResult[results[idx] for idx in plan.output_indices]
+end
+
+"""
+    ExecutionBuffers
+
+Pre-allocated buffer set for zero-allocation repeated execution.
+Created once via `allocate_buffers(plan, data)`, then reused across calls.
+"""
+struct ExecutionBuffers{T,N}
+    buffers::Vector{Array{T,N}}
+end
+
+"""
+    allocate_buffers(plan::ReductionPlan, data::AbstractArray{T,N}) where {T,N}
+
+Pre-allocate all output buffers for a plan given an input array shape.
+Returns an `ExecutionBuffers` that can be passed to `execute!` for zero-allocation execution.
+"""
+function allocate_buffers(plan::ReductionPlan, data::AbstractArray{T,N}) where {T,N}
+    isempty(plan.execution_sequence) && _compile_execution_sequence!(plan)
+    
+    bufs = Array{T,N}[]
+    # Walk the sequence to determine output shapes
+    shapes = Vector{NTuple{N,Int}}(undef, length(plan.execution_sequence))
+    for (i, step) in enumerate(plan.execution_sequence)
+        if isempty(step.input_indices)
+            # Root node: output shape from applying window to input
+            config = step.node.config
+            shapes[i] = ntuple(d -> div(size(data, d), config.sizes[d]), N)
         else
-            error("Output node $id did not return ReductionResult")
+            # Chain node: output shape from applying window to parent's output
+            parent_shape = shapes[step.input_indices[1]]
+            config = step.node.config
+            shapes[i] = ntuple(d -> div(parent_shape[d], config.sizes[d]), N)
+        end
+        push!(bufs, Array{T,N}(undef, shapes[i]))
+    end
+    return ExecutionBuffers{T,N}(bufs)
+end
+
+"""
+    execute!(plan::ReductionPlan, buffers::ExecutionBuffers{T,N}, data::AbstractArray{T,N}) where {T,N}
+
+Zero-allocation execution using pre-allocated buffers.
+After the first call to `allocate_buffers`, repeated `execute!` calls allocate nothing.
+
+Returns a view into the buffers (no copy). Do not mutate the input `data` or buffers
+between calls if you need results from a previous call.
+"""
+function execute!(plan::ReductionPlan, buffers::ExecutionBuffers{T,N},
+                  data::AbstractArray{T,N}) where {T,N}
+    seq = plan.execution_sequence
+    bufs = buffers.buffers
+    
+    @inbounds for (i, step) in enumerate(seq)
+        input_idxs = step.input_indices
+        if isempty(input_idxs)
+            # Root: reduce from input data into buffer
+            blockwise_mean!(bufs[i], data, step.node.config.sizes)
+        else
+            # Chain: reduce from parent buffer into this buffer
+            blockwise_mean!(bufs[i], bufs[input_idxs[1]], step.node.config.sizes)
         end
     end
-    return output_results
+    
+    # Return views of output buffers (zero-copy)
+    return ntuple(i -> bufs[plan.output_indices[i]], length(plan.output_indices))
 end
 
 """
@@ -158,36 +205,12 @@ end
 Execute a windowing node.
 """
 function execute_node(node::WindowNode, input::AbstractArray, backend, cache)
-    # FAST PATH: Direct computation for single-factor mean reduction
-    # Avoids creating ReductionResult for every window (zero metadata allocations)
     config = node.config
-    T = eltype(input)
-    
-    # Calculate output dimensions
-    out_dims = ntuple(i -> div(size(input, i), config.sizes[i]), ndims(input))
-    output = similar(input, T, out_dims)
-    
-    # Direct window computation without allocations
-    @inbounds for I in CartesianIndices(output)
-        # Calculate window start position
-        starts = ntuple(i -> (I[i] - 1) * config.sizes[i] + 1, ndims(input))
-        ends = ntuple(i -> starts[i] + config.sizes[i] - 1, ndims(input))
-        
-        # Compute mean directly
-        sum_val = zero(T)
-        count = 0
-        for idx in CartesianIndices(ntuple(i -> starts[i]:ends[i], ndims(input)))
-            sum_val += input[idx]
-            count += 1
-        end
-        output[I] = sum_val / count
-    end
-    
+    output = blockwise_mean_kernel(input, config.sizes)
     return ReductionResult(output, size(input))
 end
 
 function execute_node(node::WindowNode, input::ReductionResult, backend, cache)
-    # Extract array and apply window operation
     arr = input.data
     
     # Handle scalar input (can't reduce further)
@@ -195,9 +218,7 @@ function execute_node(node::WindowNode, input::ReductionResult, backend, cache)
         return input
     end
     
-    # Generate window views and compute directly
     config = node.config
-    T = eltype(arr)
     out_dims = ntuple(i -> div(size(arr, i), config.sizes[i]), ndims(arr))
     
     # Handle case where reduction produces empty output
@@ -205,21 +226,7 @@ function execute_node(node::WindowNode, input::ReductionResult, backend, cache)
         return input
     end
     
-    output = similar(arr, T, out_dims)
-    
-    @inbounds for I in CartesianIndices(output)
-        starts = ntuple(i -> (I[i] - 1) * config.sizes[i] + 1, ndims(arr))
-        ends = ntuple(i -> starts[i] + config.sizes[i] - 1, ndims(arr))
-        
-        sum_val = zero(T)
-        count = 0
-        for idx in CartesianIndices(ntuple(i -> starts[i]:ends[i], ndims(arr)))
-            sum_val += arr[idx]
-            count += 1
-        end
-        output[I] = sum_val / count
-    end
-    
+    output = blockwise_mean_kernel(arr, config.sizes)
     return ReductionResult(output, size(arr))
 end
 
@@ -323,12 +330,7 @@ function execute_node(node::TreeNode, input::Vector, backend, cache)
     
     result = tree_reduce_impl(items, op, backend)
     
-    metadata = Dict{Symbol,Any}(
-        :arity => node.arity,
-        :n_inputs => length(input)
-    )
-    
-    return ReductionResult(result, metadata)
+    return ReductionResult(result, ())
 end
 
 """
@@ -339,22 +341,16 @@ Execute a user-defined function node.
 function execute_node(node::UserNode, input, backend, cache)
     data = input isa ReductionResult ? input.data : input
     result = node.f(data)
-    
-    metadata = Dict{Symbol,Any}(
-        :user_function => nameof(node.f),
-        :output_type => typeof(result)
-    )
-    
-    return ReductionResult(result, metadata)
+    return ReductionResult(result, ())
 end
 
 function execute_node(node::UserNode, input::Vector, backend, cache)
     # Apply to each input
-    results = []
+    results = ReductionResult[]
     for item in input
         data = item isa ReductionResult ? item.data : item
         result = node.f(data)
-        push!(results, ReductionResult(result, Dict(:user_function => nameof(node.f))))
+        push!(results, ReductionResult(result, ()))
     end
     return results
 end

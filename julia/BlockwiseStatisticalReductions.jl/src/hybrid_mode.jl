@@ -112,47 +112,15 @@ end
 function _compute_hybrid_blockwise_mean(data::AbstractArray{T,N}, 
                                          window_sizes::NTuple{N,Int},
                                          out_dims::NTuple{N,Int}) where {T,N}
-    
-    result = similar(data, out_dims)
-    
-    for I in CartesianIndices(result)
-        start_idx = ntuple(i -> (I[i] - 1) * window_sizes[i] + 1, N)
-        
-        s = zero(T)
-        count = 0
-        
-        inner_indices = CartesianIndices(ntuple(i -> start_idx[i]:start_idx[i]+window_sizes[i]-1, N))
-        for J in inner_indices
-            s += data[J]
-            count += 1
-        end
-        
-        result[I] = s / count
-    end
-    
-    return result
+    # Delegate to canonical kernel
+    return blockwise_mean_kernel(data, window_sizes)
 end
 
 function _compute_hybrid_blockwise_variance(data::AbstractArray{T,N},
                                            window_sizes::NTuple{N,Int},
                                            out_dims::NTuple{N,Int}) where {T,N}
-    
-    result = similar(data, out_dims)
-    
-    for I in CartesianIndices(result)
-        start_idx = ntuple(i -> (I[i] - 1) * window_sizes[i] + 1, N)
-        
-        acc = VarianceAccumulator{T}()
-        
-        inner_indices = CartesianIndices(ntuple(i -> start_idx[i]:start_idx[i]+window_sizes[i]-1, N))
-        for J in inner_indices
-            fit!(acc, data[J])
-        end
-        
-        result[I] = Statistics.var(acc)
-    end
-    
-    return result
+    # Delegate to canonical kernel
+    return blockwise_variance_kernel(data, window_sizes)
 end
 
 function _compute_hybrid_blockwise_stats(data::AbstractArray{T,N},

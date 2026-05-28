@@ -148,10 +148,79 @@ end
 """
     finalize_plan(builder::ReductionPlanBuilder)
 
-Finalize the plan and return a ReductionPlan.
+Finalize the plan: compile the DAG into a flat execution sequence
+that eliminates all runtime graph traversal overhead.
 """
 function finalize_plan(builder::ReductionPlanBuilder)
-    return builder.plan
+    plan = builder.plan
+    _compile_execution_sequence!(plan)
+    return plan
+end
+
+"""
+    _compile_execution_sequence!(plan::ReductionPlan)
+
+Pre-compile the DAG into a flat Vector of ExecutionSteps.
+After this, `execute` just iterates the vector — no Dict lookups,
+no topological sort, no linear node scans at runtime.
+"""
+function _compile_execution_sequence!(plan::ReductionPlan)
+    # Topological sort (done once at compile time, not at every execute call)
+    visited = Set{UInt64}()
+    order = UInt64[]
+    queue = copy(plan.inputs)
+    
+    while !isempty(queue)
+        node_id = popfirst!(queue)
+        node_id in visited && continue
+        push!(visited, node_id)
+        push!(order, node_id)
+        if haskey(plan.edges, node_id)
+            for child in plan.edges[node_id]
+                push!(queue, child)
+            end
+        end
+    end
+    
+    # Build node_id → result_index mapping
+    id_to_idx = Dict{UInt64, Int}()
+    for (i, nid) in enumerate(order)
+        id_to_idx[nid] = i
+    end
+    
+    # Build reverse edge map: child → parents
+    reverse_edges = Dict{UInt64, Vector{UInt64}}()
+    for (src, dsts) in plan.edges
+        for dst in dsts
+            rev = get!(reverse_edges, dst, UInt64[])
+            push!(rev, src)
+        end
+    end
+    
+    # Compile steps
+    steps = ExecutionStep[]
+    for (i, node_id) in enumerate(order)
+        # Find the node
+        node = nothing
+        for n in plan.nodes
+            if n.id == node_id
+                node = n
+                break
+            end
+        end
+        node === nothing && error("Node $node_id not found during compilation")
+        
+        # Find input indices (parents in the DAG)
+        parent_ids = get(reverse_edges, node_id, UInt64[])
+        input_indices = Int[id_to_idx[pid] for pid in parent_ids]
+        
+        push!(steps, ExecutionStep(node, input_indices, i))
+    end
+    
+    plan.execution_sequence = steps
+    plan.output_indices = Int[id_to_idx[oid] for oid in plan.outputs]
+    
+    return nothing
 end
 
 """
@@ -184,49 +253,31 @@ function build_optimal_multires_plan(input_shape::NTuple{N, Int}, target_factors
     for (factor, parent_factor, step_factor) in factor_chain
         if parent_factor == 0
             # Root level - reduce from input
+            # WindowNode computes block mean directly (no separate StatsNode needed)
             window_sizes = ntuple(i -> i in dims ? factor : 1, N)
             window = WindowConfig(window_sizes, window_sizes, :valid)
             window_node = WindowNode(window, next_id!(builder))
             add_node!(builder, window_node)
-            window_id = builder.current_node_id
             
-            # Add stats node chained from window node
-            stat_type = length(stats_types) == 1 ? stats_types[1] : stats_types
-            stats_node = StatsNode(Val(stat_type), :, next_id!(builder))
-            add_node!(builder, stats_node)
-            
-            # Link window -> stats
-            edges = get!(builder.plan.edges, window_id, UInt64[])
-            push!(edges, stats_node.id)
-            
-            output_map[factor] = stats_node.id
+            output_map[factor] = window_node.id
         else
             # Get parent stats node id (this is the data source)
             parent_id = output_map[parent_factor]
             
-            # Add window node for reduction step  
+            # Add window node for reduction step
+            # WindowNode computes block mean directly (no separate StatsNode needed)
             window_sizes = ntuple(i -> i in dims ? step_factor : 1, N)
             window = WindowConfig(window_sizes, window_sizes, :valid)
             window_node = WindowNode(window, next_id!(builder))
             push!(builder.plan.nodes, window_node)
             
-            # Link parent stats -> window node (window receives the data)
+            # Link parent -> window node (window receives the reduced data)
             edges = get!(builder.plan.edges, parent_id, UInt64[])
             push!(edges, window_node.id)
             
             builder.current_node_id = window_node.id
-            window_id = window_node.id
             
-            # Add stats node chained from window node
-            stat_type = length(stats_types) == 1 ? stats_types[1] : stats_types
-            stats_node = StatsNode(Val(stat_type), :, next_id!(builder))
-            add_node!(builder, stats_node)
-            
-            # Link window -> stats
-            edges = get!(builder.plan.edges, window_id, UInt64[])
-            push!(edges, stats_node.id)
-            
-            output_map[factor] = stats_node.id
+            output_map[factor] = window_node.id
         end
     end
     

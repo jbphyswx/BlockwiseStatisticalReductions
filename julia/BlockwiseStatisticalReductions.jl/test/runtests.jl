@@ -49,6 +49,14 @@ Test.@testset "BlockwiseStatisticalReductions" begin
         include("test_public_api.jl")
     end
     
+    Test.@testset "Canonical Kernels" begin
+        include("test_canonical_kernels.jl")
+    end
+    
+    Test.@testset "Compiled Execution" begin
+        include("test_compiled_execution.jl")
+    end
+    
     Test.@testset "Integration - Multi-Resolution Workflows" begin
         include("integration/test_multires_workflow.jl")
     end

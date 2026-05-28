@@ -274,6 +274,13 @@ end
 
 Return the number of observations accumulated.
 """
-OnlineStats.nobs(acc::VarianceAccumulator) = acc.count
-OnlineStats.nobs(acc::CovarianceAccumulator) = acc.count
-OnlineStats.nobs(acc::RawMomentsAccumulator) = acc.count
+nobs(acc::VarianceAccumulator) = acc.count
+nobs(acc::CovarianceAccumulator) = acc.count
+nobs(acc::RawMomentsAccumulator) = acc.count
+
+# OnlineStats compatibility (only if OnlineStats is loaded)
+if isdefined(@__MODULE__, :OnlineStats) && isdefined(OnlineStats, :nobs)
+    OnlineStats.nobs(acc::VarianceAccumulator) = acc.count
+    OnlineStats.nobs(acc::CovarianceAccumulator) = acc.count
+    OnlineStats.nobs(acc::RawMomentsAccumulator) = acc.count
+end

@@ -2,9 +2,8 @@
 SIMD-vectorized kernels for core reductions.
 
 Uses LoopVectorization.jl for vectorized loops targeting modern CPUs.
+Note: LoopVectorization is imported at module level.
 """
-
-using LoopVectorization: LoopVectorization
 
 """
     simd_blockwise_mean!(out, data, window_sizes)

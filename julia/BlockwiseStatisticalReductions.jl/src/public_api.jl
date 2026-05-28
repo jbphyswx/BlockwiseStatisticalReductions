@@ -186,170 +186,47 @@ function _compute_blockwise_stats_impl(data::AbstractArray{T,N},
     out_dims = ntuple(i -> div(size(data, i), window.sizes[i]), N)
     results = Dict{Symbol, AbstractArray}()
     
-    # Single stat optimization
+    # Single stat optimization — delegate to canonical kernels
     if length(stats) == 1
         stat = stats[1]
         if stat == :mean
-            results[:mean] = _compute_blockwise_mean_only(data, window.sizes, out_dims)
+            results[:mean] = blockwise_mean_kernel(data, window.sizes)
         elseif stat == :variance
-            results[:variance] = _compute_blockwise_variance_only(data, window.sizes, out_dims; corrected=corrected)
+            results[:variance] = blockwise_variance_kernel(data, window.sizes; corrected=corrected)
         elseif stat == :std
-            results[:std] = _compute_blockwise_std_only(data, window.sizes, out_dims; corrected=corrected)
+            results[:std] = sqrt.(blockwise_variance_kernel(data, window.sizes; corrected=corrected))
         elseif stat == :min
-            results[:min] = _compute_blockwise_min_only(data, window.sizes, out_dims)
+            out = similar(data, T, out_dims)
+            results[:min] = blockwise_min!(out, data, window.sizes)
         elseif stat == :max
-            results[:max] = _compute_blockwise_max_only(data, window.sizes, out_dims)
+            out = similar(data, T, out_dims)
+            results[:max] = blockwise_max!(out, data, window.sizes)
         else
             error("Unknown statistic: $stat")
         end
         return results
     end
     
-    # Multiple stats - compute all in one pass where possible
+    # Multiple stats — use single-pass mean+variance kernel where possible
     if :mean in stats || :variance in stats || :std in stats
-        # Use VarianceAccumulator for these
-        means = similar(data, out_dims)
-        variances = :variance in stats || :std in stats ? similar(data, out_dims) : nothing
-        
-        for I in CartesianIndices(means)
-            start_idx = ntuple(i -> (I[i] - 1) * window.sizes[i] + 1, N)
-            
-            acc = VarianceAccumulator{T}()
-            
-            inner_indices = CartesianIndices(ntuple(i -> start_idx[i]:start_idx[i]+window.sizes[i]-1, N))
-            for J in inner_indices
-                fit!(acc, data[J])
-            end
-            
-            means[I] = Statistics.mean(acc)
-            if variances !== nothing
-                variances[I] = Statistics.var(acc; corrected=corrected)
-            end
-        end
+        means = similar(data, T, out_dims)
+        variances = similar(data, T, out_dims)
+        blockwise_mean_variance!(means, variances, data, window.sizes; corrected=corrected)
         
         :mean in stats && (results[:mean] = means)
         :variance in stats && (results[:variance] = variances)
         :std in stats && (results[:std] = sqrt.(variances))
     end
     
-    # Min/Max computed separately
+    # Min/Max computed separately via canonical kernels
     if :min in stats
-        results[:min] = _compute_blockwise_min_only(data, window.sizes, out_dims)
+        out = similar(data, T, out_dims)
+        results[:min] = blockwise_min!(out, data, window.sizes)
     end
     if :max in stats
-        results[:max] = _compute_blockwise_max_only(data, window.sizes, out_dims)
+        out = similar(data, T, out_dims)
+        results[:max] = blockwise_max!(out, data, window.sizes)
     end
     
     return results
-end
-
-function _compute_blockwise_mean_only(data::AbstractArray{T,N}, 
-                                       window_sizes::NTuple{N,Int},
-                                       out_dims::NTuple{N,Int}) where {T,N}
-    
-    result = similar(data, out_dims)
-    
-    for I in CartesianIndices(result)
-        start_idx = ntuple(i -> (I[i] - 1) * window_sizes[i] + 1, N)
-        
-        s = zero(T)
-        count = 0
-        
-        inner_indices = CartesianIndices(ntuple(i -> start_idx[i]:start_idx[i]+window_sizes[i]-1, N))
-        for J in inner_indices
-            s += data[J]
-            count += 1
-        end
-        
-        result[I] = s / count
-    end
-    
-    return result
-end
-
-function _compute_blockwise_variance_only(data::AbstractArray{T,N}, 
-                                           window_sizes::NTuple{N,Int},
-                                           out_dims::NTuple{N,Int};
-                                           corrected::Bool=true) where {T,N}
-    
-    result = similar(data, out_dims)
-    
-    for I in CartesianIndices(result)
-        start_idx = ntuple(i -> (I[i] - 1) * window_sizes[i] + 1, N)
-        
-        acc = VarianceAccumulator{T}()
-        
-        inner_indices = CartesianIndices(ntuple(i -> start_idx[i]:start_idx[i]+window_sizes[i]-1, N))
-        for J in inner_indices
-            fit!(acc, data[J])
-        end
-        
-        result[I] = Statistics.var(acc; corrected=corrected)
-    end
-    
-    return result
-end
-
-function _compute_blockwise_std_only(data::AbstractArray{T,N}, 
-                                    window_sizes::NTuple{N,Int},
-                                    out_dims::NTuple{N,Int};
-                                    corrected::Bool=true) where {T,N}
-    
-    return sqrt.(_compute_blockwise_variance_only(data, window_sizes, out_dims; corrected=corrected))
-end
-
-function _compute_blockwise_min_only(data::AbstractArray{T,N}, 
-                                    window_sizes::NTuple{N,Int},
-                                    out_dims::NTuple{N,Int}) where {T,N}
-    
-    result = similar(data, out_dims)
-    
-    for I in CartesianIndices(result)
-        start_idx = ntuple(i -> (I[i] - 1) * window_sizes[i] + 1, N)
-        
-        first = true
-        m = zero(T)
-        
-        inner_indices = CartesianIndices(ntuple(i -> start_idx[i]:start_idx[i]+window_sizes[i]-1, N))
-        for J in inner_indices
-            if first
-                m = data[J]
-                first = false
-            else
-                m = min(m, data[J])
-            end
-        end
-        
-        result[I] = m
-    end
-    
-    return result
-end
-
-function _compute_blockwise_max_only(data::AbstractArray{T,N}, 
-                                    window_sizes::NTuple{N,Int},
-                                    out_dims::NTuple{N,Int}) where {T,N}
-    
-    result = similar(data, out_dims)
-    
-    for I in CartesianIndices(result)
-        start_idx = ntuple(i -> (I[i] - 1) * window_sizes[i] + 1, N)
-        
-        first = true
-        m = zero(T)
-        
-        inner_indices = CartesianIndices(ntuple(i -> start_idx[i]:start_idx[i]+window_sizes[i]-1, N))
-        for J in inner_indices
-            if first
-                m = data[J]
-                first = false
-            else
-                m = max(m, data[J])
-            end
-        end
-        
-        result[I] = m
-    end
-    
-    return result
 end

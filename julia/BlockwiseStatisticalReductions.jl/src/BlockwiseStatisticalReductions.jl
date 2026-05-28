@@ -3,6 +3,7 @@ module BlockwiseStatisticalReductions
 using StatsBase: StatsBase
 using OnlineStats: OnlineStats
 using RollingFunctions: RollingFunctions
+using LoopVectorization: LoopVectorization
 
 # Stdlib imports (no Project.toml entry needed)
 using Serialization: Serialization
@@ -40,6 +41,9 @@ export acquire!, release!, with_buffer!
 export register_level!, acquire_level!, release_level!
 export create_buffer_pool_for_factors
 
+# Zero-allocation execution
+export ExecutionBuffers, allocate_buffers, execute!
+
 # Hybrid mode
 export HybridReductionSpec, HybridReductionResult
 export execute_hybrid, hybrid_reduction
@@ -48,10 +52,19 @@ export execute_hybrid, hybrid_reduction
 export blockwise_stats, blockwise_mean, blockwise_variance, blockwise_std
 export blockwise_covariance, blockwise_moments
 
+# Canonical in-place kernels
+export blockwise_mean!, blockwise_variance!, blockwise_mean_variance!
+export blockwise_min!, blockwise_max!, blockwise_product_mean!
+export blockwise_joint_moments!
+
 include("types.jl")
 include("backends.jl")
 include("storage.jl")
 include("cache.jl")
+
+# Canonical blockwise kernels — loaded early so all other files can call them
+include("kernels/blockwise_kernels.jl")
+
 include("windows.jl")
 include("statistics/stats.jl")
 include("statistics/core.jl")
@@ -63,7 +76,7 @@ include("execution/buffer_pool.jl")
 include("hybrid_mode.jl")
 include("public_api.jl")
 
-# Optimization kernels
+# Additional SIMD kernel variants
 include("kernels/simd_kernels.jl")
 
 # Distributed scheduling

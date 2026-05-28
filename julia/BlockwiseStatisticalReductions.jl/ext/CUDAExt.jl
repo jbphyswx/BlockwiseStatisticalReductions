@@ -1,6 +1,6 @@
 module CUDAExt
 
-using BlockwiseStatisticalReductions
+using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions
 using CUDA: CUDA
 
 # GPU backend implementation

@@ -158,35 +158,78 @@ end
 Execute a windowing node.
 """
 function execute_node(node::WindowNode, input::AbstractArray, backend, cache)
-    # Generate window views with metadata
-    iter = rolling_views(input, node.config)
+    # FAST PATH: Direct computation for single-factor mean reduction
+    # Avoids creating ReductionResult for every window (zero metadata allocations)
+    config = node.config
+    T = eltype(input)
     
-    # Collect all window results with metadata
-    results = ReductionResult[]
-    for (view, meta) in iter
-        push!(results, ReductionResult(view, meta))
+    # Calculate output dimensions
+    out_dims = ntuple(i -> div(size(input, i), config.sizes[i]), ndims(input))
+    output = similar(input, T, out_dims)
+    
+    # Direct window computation without allocations
+    @inbounds for I in CartesianIndices(output)
+        # Calculate window start position
+        starts = ntuple(i -> (I[i] - 1) * config.sizes[i] + 1, ndims(input))
+        ends = ntuple(i -> starts[i] + config.sizes[i] - 1, ndims(input))
+        
+        # Compute mean directly
+        sum_val = zero(T)
+        count = 0
+        for idx in CartesianIndices(ntuple(i -> starts[i]:ends[i], ndims(input)))
+            sum_val += input[idx]
+            count += 1
+        end
+        output[I] = sum_val / count
     end
     
-    return results
+    return ReductionResult(output, size(input))
+end
+
+function execute_node(node::WindowNode, input::ReductionResult, backend, cache)
+    # Extract array and apply window operation
+    arr = input.data
+    
+    # Handle scalar input (can't reduce further)
+    if arr isa Number
+        return input
+    end
+    
+    # Generate window views and compute directly
+    config = node.config
+    T = eltype(arr)
+    out_dims = ntuple(i -> div(size(arr, i), config.sizes[i]), ndims(arr))
+    
+    # Handle case where reduction produces empty output
+    if any(d -> d == 0, out_dims)
+        return input
+    end
+    
+    output = similar(arr, T, out_dims)
+    
+    @inbounds for I in CartesianIndices(output)
+        starts = ntuple(i -> (I[i] - 1) * config.sizes[i] + 1, ndims(arr))
+        ends = ntuple(i -> starts[i] + config.sizes[i] - 1, ndims(arr))
+        
+        sum_val = zero(T)
+        count = 0
+        for idx in CartesianIndices(ntuple(i -> starts[i]:ends[i], ndims(arr)))
+            sum_val += arr[idx]
+            count += 1
+        end
+        output[I] = sum_val / count
+    end
+    
+    return ReductionResult(output, size(arr))
 end
 
 function execute_node(node::WindowNode, input::Vector{ReductionResult}, backend, cache)
     # Handle nested windows (apply to each previous result)
     all_results = ReductionResult[]
     for item in input
-        if item isa ReductionResult
-            arr = item.data
-        else
-            arr = item
-        end
-        
-        if arr isa AbstractArray
-            iter = rolling_views(arr, node.config)
-            for (view, meta) in iter
-                combined_meta = merge(item.metadata, meta)
-                push!(all_results, ReductionResult(view, combined_meta))
-            end
-        end
+        # Apply window operation to this result
+        result = execute_node(node, item, backend, cache)
+        push!(all_results, result)
     end
     return all_results
 end
@@ -202,43 +245,34 @@ function execute_node(node::StatsNode{S}, input::AbstractArray, backend, cache) 
     stat = create_stat(S, eltype(input))
     fit_window!(stat, input)
     
-    metadata = Dict{Symbol,Any}(
-        :input_shape => size(input),
-        :stat_type => typeof(stat)
-    )
+    return ReductionResult(OnlineStats.value(stat), size(input))
+end
+
+function execute_node(node::StatsNode{S}, input::ReductionResult, backend, cache) where S
+    # Extract array from ReductionResult
+    arr = input.data
     
-    return ReductionResult(OnlineStats.value(stat), metadata)
+    # Handle scalar input (can't compute stat over single value meaningfully)
+    if arr isa Number
+        return input  # Return as-is
+    end
+    
+    stat = create_stat(S, eltype(arr))
+    fit_window!(stat, arr)
+    
+    return ReductionResult(OnlineStats.value(stat), size(arr))
 end
 
 function execute_node(node::StatsNode{S}, input::Vector{ReductionResult}, backend, cache) where S
-    # Multiple window results - compute stat for each and assemble into reduced array
-    # Get output dimensions from first result's metadata
-    out_shape = input[1].metadata[:output_shape]
-    T = eltype(input[1].data)
-    
-    # Pre-allocate output array
-    output = similar(input[1].data, T, out_shape)
-    
-    # Compute statistic for each window and place in output array
-    for (idx, item) in enumerate(input)
-        # Get output position from metadata
-        pos = item.metadata[:position]
-        
-        # Compute statistic
+    # Multiple window results - compute stat for each
+    results = ReductionResult[]
+    for item in input
+        T = eltype(item.data)
         stat = create_stat(S, T)
         fit_window!(stat, item.data)
-        
-        # Place in output array
-        output[pos...] = OnlineStats.value(stat)
+        push!(results, ReductionResult(OnlineStats.value(stat), item.shape))
     end
-    
-    metadata = Dict{Symbol,Any}(
-        :input_shape => size(input[1].data),
-        :output_shape => out_shape,
-        :stat_type => S
-    )
-    
-    return ReductionResult(output, metadata)
+    return results
 end
 
 function execute_node(node::StatsNode{S}, input::Vector{Any}, backend, cache) where S

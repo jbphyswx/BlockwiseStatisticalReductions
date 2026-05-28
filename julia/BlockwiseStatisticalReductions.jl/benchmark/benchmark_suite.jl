@@ -8,7 +8,7 @@ Compare against:
 """
 
 using BenchmarkTools
-using BlockwiseStatisticalReductions
+using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions
 using Statistics
 using Random
 

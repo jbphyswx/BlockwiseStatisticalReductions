@@ -1,6 +1,6 @@
 module OhMyThreadsExt
 
-using BlockwiseStatisticalReductions
+using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions
 using OhMyThreads: OhMyThreads
 
 """

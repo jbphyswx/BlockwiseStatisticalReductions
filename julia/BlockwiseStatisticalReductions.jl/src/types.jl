@@ -111,24 +111,22 @@ mutable struct ReductionPlan
 end
 
 """
-    ReductionResult{T,M}
+    ReductionResult{T}
 
-Holds computed statistics with attached metadata.
+Holds computed reduction results with minimal metadata.
+Type-stable and allocation-minimal - no Dict overhead.
 
 # Fields
-- `data::T`: The computed result (scalar, array, or OnlineStat object)
-- `metadata::M`: Dictionary with keys like :origin_indices, :window_config, 
-  :operation_history, :count, :disk_path
+- `data::T`: The computed result (array, scalar, or OnlineStat)
+- `shape::Tuple`: Original input shape (for verification)
 """
-struct ReductionResult{T,M<:AbstractDict}
+struct ReductionResult{T}
     data::T
-    metadata::M
+    shape::Tuple
 end
 
-ReductionResult(data) = ReductionResult(data, Dict{Symbol,Any}())
-
-Base.getindex(r::ReductionResult, key::Symbol) = r.metadata[key]
-Base.haskey(r::ReductionResult, key::Symbol) = haskey(r.metadata, key)
+Base.size(r::ReductionResult) = size(r.data)
+Base.eltype(r::ReductionResult{T}) where T = eltype(r.data)
 
 """
     AbstractExecutionBackend

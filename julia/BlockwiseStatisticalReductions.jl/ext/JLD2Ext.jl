@@ -1,6 +1,6 @@
 module JLD2Ext
 
-using BlockwiseStatisticalReductions
+using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions
 using JLD2: JLD2
 
 """

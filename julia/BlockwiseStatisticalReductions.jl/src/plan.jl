@@ -155,7 +155,7 @@ function finalize_plan(builder::ReductionPlanBuilder)
 end
 
 """
-    build_optimal_multires_plan(input_shape::NTuple, target_factors::Vector{Int}, stats_types::Vector{Symbol})
+    build_optimal_multires_plan(input_shape::NTuple, target_factors::Vector{Int}, stats_types::Vector{Symbol}; dims=ntuple(i->i, N-1))
 
 Build an optimized multi-resolution plan with DAG reuse.
 
@@ -163,9 +163,12 @@ Creates a proper DAG where intermediate results are reused:
 - 2x reduction feeds 4x (2*2), 8x (2*4), etc.
 - 3x reduction feeds 6x (3*2), 12x (3*4), etc.
 - Minimizes redundant computation through caching.
+
+Keyword argument `dims` specifies which dimensions to reduce (default: all except last).
 """
 function build_optimal_multires_plan(input_shape::NTuple{N, Int}, target_factors::Vector{Int}, 
-                                      stats_types::Vector{Symbol}=[:mean]) where N
+                                      stats_types::Vector{Symbol}=[:mean];
+                                      dims=ntuple(i->i, N-1)) where N
     
     # Sort and deduplicate target factors
     unique_factors = sort(unique(filter(f -> f > 0, target_factors)))
@@ -181,7 +184,8 @@ function build_optimal_multires_plan(input_shape::NTuple{N, Int}, target_factors
     for (factor, parent_factor, step_factor) in factor_chain
         if parent_factor == 0
             # Root level - reduce from input
-            window = WindowConfig(ntuple(i -> factor, N), ntuple(i -> factor, N), :valid)
+            window_sizes = ntuple(i -> i in dims ? factor : 1, N)
+            window = WindowConfig(window_sizes, window_sizes, :valid)
             window_node = WindowNode(window, next_id!(builder))
             add_node!(builder, window_node)
             window_id = builder.current_node_id
@@ -200,8 +204,9 @@ function build_optimal_multires_plan(input_shape::NTuple{N, Int}, target_factors
             # Get parent stats node id (this is the data source)
             parent_id = output_map[parent_factor]
             
-            # Add window node for reduction step
-            window = WindowConfig(ntuple(i -> step_factor, N), ntuple(i -> step_factor, N), :valid)
+            # Add window node for reduction step  
+            window_sizes = ntuple(i -> i in dims ? step_factor : 1, N)
+            window = WindowConfig(window_sizes, window_sizes, :valid)
             window_node = WindowNode(window, next_id!(builder))
             push!(builder.plan.nodes, window_node)
             

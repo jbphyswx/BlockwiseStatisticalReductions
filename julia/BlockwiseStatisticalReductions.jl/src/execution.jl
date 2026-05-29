@@ -93,19 +93,23 @@ Returns an `ExecutionBuffers` that can be passed to `execute!` for zero-allocati
 """
 function allocate_buffers(plan::ReductionPlan, data::AbstractArray{T,N}) where {T,N}
     isempty(plan.execution_sequence) && _compile_execution_sequence!(plan)
-    
+
     bufs = Array{T,N}[]
-    # Walk the sequence to determine output shapes
     shapes = Vector{NTuple{N,Int}}(undef, length(plan.execution_sequence))
     for (i, step) in enumerate(plan.execution_sequence)
-        if isempty(step.input_indices)
-            # Root node: output shape from applying window to input
-            config = step.node.config
+        node = step.node
+        if node isa ReductionNode
+            shapes[i] = node.output_shape::NTuple{N,Int}
+        elseif node isa SufficientStatsNode
+            # Multi-output node: allocate a dummy buffer (execute! falls back
+            # to allocating path for plans containing SufficientStatsNode)
+            shapes[i] = node.output_shape::NTuple{N,Int}
+        elseif isempty(step.input_indices)
+            config = node.config
             shapes[i] = ntuple(d -> div(size(data, d), config.sizes[d]), N)
         else
-            # Chain node: output shape from applying window to parent's output
             parent_shape = shapes[step.input_indices[1]]
-            config = step.node.config
+            config = node.config
             shapes[i] = ntuple(d -> div(parent_shape[d], config.sizes[d]), N)
         end
         push!(bufs, Array{T,N}(undef, shapes[i]))
@@ -126,19 +130,24 @@ function execute!(plan::ReductionPlan, buffers::ExecutionBuffers{T,N},
                   data::AbstractArray{T,N}) where {T,N}
     seq = plan.execution_sequence
     bufs = buffers.buffers
-    
+
     @inbounds for (i, step) in enumerate(seq)
+        node = step.node
         input_idxs = step.input_indices
+        if node isa SufficientStatsNode
+            # SufficientStatsNode not supported in zero-alloc path yet;
+            # fall back to allocating execute()
+            return map(r -> r.data, execute(plan, data))
+        end
+        # Resolve the kernel: ReductionNode carries it; WindowNode defaults to mean
+        kernel = node isa ReductionNode ? node.kernel : blockwise_mean!
         if isempty(input_idxs)
-            # Root: reduce from input data into buffer
-            blockwise_mean!(bufs[i], data, step.node.config.sizes)
+            kernel(bufs[i], data, node.config.sizes)
         else
-            # Chain: reduce from parent buffer into this buffer
-            blockwise_mean!(bufs[i], bufs[input_idxs[1]], step.node.config.sizes)
+            kernel(bufs[i], bufs[input_idxs[1]], node.config.sizes)
         end
     end
-    
-    # Return views of output buffers (zero-copy)
+
     return ntuple(i -> bufs[plan.output_indices[i]], length(plan.output_indices))
 end
 
@@ -199,10 +208,96 @@ function topological_sort(plan::ReductionPlan)
     return order
 end
 
+#
+# ─── ReductionNode execution (new: dispatches through node.kernel) ───────────
+#
+
+"""
+    execute_node(node::ReductionNode, input::AbstractArray, backend, cache)
+
+Execute a ReductionNode on raw input data. Allocates output and calls the
+kernel function stored in the node.
+"""
+function execute_node(node::ReductionNode, input::AbstractArray, backend, cache)
+    config = node.config
+    N = ndims(input)
+    out_dims = ntuple(i -> div(size(input, i), config.sizes[i]), N)
+    out = similar(input, eltype(input), out_dims)
+    node.kernel(out, input, config.sizes)
+    return ReductionResult(out, size(input))
+end
+
+function execute_node(node::ReductionNode, input::ReductionResult, backend, cache)
+    arr = input.data
+    arr isa Number && return input
+
+    config = node.config
+    N = ndims(arr)
+    out_dims = ntuple(i -> div(size(arr, i), config.sizes[i]), N)
+    any(d -> d == 0, out_dims) && return input
+
+    out = similar(arr, eltype(arr), out_dims)
+    node.kernel(out, arr, config.sizes)
+    return ReductionResult(out, size(arr))
+end
+
+#
+# ─── SufficientStatsNode execution (multi-output sufficient statistics) ───────
+#
+
+"""
+    execute_node(node::SufficientStatsNode, input::AbstractArray, backend, cache)
+
+Execute a SufficientStatsNode at the base level: compute sufficient statistics
+from raw data. Returns ReductionResult with NamedTuple data containing
+multiple arrays (e.g., mean + M2).
+"""
+function execute_node(node::SufficientStatsNode, input::AbstractArray, backend, cache)
+    @assert node.is_base "Base-level SufficientStatsNode expected for raw array input"
+    config = node.config
+    T = eltype(input)
+    N = ndims(input)
+    out_dims = ntuple(i -> div(size(input, i), config.sizes[i]), N)
+
+    # Allocate output arrays for sufficient statistics
+    out_mean = similar(input, T, out_dims)
+    out_M2 = similar(input, T, out_dims)
+    node.compute_kernel(out_mean, out_M2, input, config.sizes)
+
+    data = (mean = out_mean, M2 = out_M2)
+    return ReductionResult(data, size(input))
+end
+
+"""
+    execute_node(node::SufficientStatsNode, input::ReductionResult, backend, cache)
+
+Execute a SufficientStatsNode at a merge level: merge sufficient statistics
+from a finer level.
+"""
+function execute_node(node::SufficientStatsNode, input::ReductionResult, backend, cache)
+    @assert !node.is_base "Merge-level SufficientStatsNode expected for ReductionResult input"
+    ss = input.data  # NamedTuple{(:mean, :M2), ...}
+    config = node.config
+    T = eltype(ss.mean)
+    N = ndims(ss.mean)
+    out_dims = ntuple(i -> div(size(ss.mean, i), config.sizes[i]), N)
+
+    out_mean = similar(ss.mean, T, out_dims)
+    out_M2 = similar(ss.M2, T, out_dims)
+    node.merge_kernel(out_mean, out_M2, ss.mean, ss.M2, node.count_per_block, config.sizes)
+
+    data = (mean = out_mean, M2 = out_M2)
+    return ReductionResult(data, size(ss.mean))
+end
+
+#
+# ─── WindowNode execution (legacy — hardcodes mean for backward compat) ──────
+#
+
 """
     execute_node(node::WindowNode, input, backend, cache)
 
-Execute a windowing node.
+Execute a legacy WindowNode (always computes mean).
 """
 function execute_node(node::WindowNode, input::AbstractArray, backend, cache)
     config = node.config
@@ -212,85 +307,20 @@ end
 
 function execute_node(node::WindowNode, input::ReductionResult, backend, cache)
     arr = input.data
-    
-    # Handle scalar input (can't reduce further)
-    if arr isa Number
-        return input
-    end
-    
+    arr isa Number && return input
+
     config = node.config
     out_dims = ntuple(i -> div(size(arr, i), config.sizes[i]), ndims(arr))
-    
-    # Handle case where reduction produces empty output
-    if any(d -> d == 0, out_dims)
-        return input
-    end
-    
+    any(d -> d == 0, out_dims) && return input
+
     output = blockwise_mean_kernel(arr, config.sizes)
     return ReductionResult(output, size(arr))
 end
 
 function execute_node(node::WindowNode, input::Vector{ReductionResult}, backend, cache)
-    # Handle nested windows (apply to each previous result)
-    all_results = ReductionResult[]
-    for item in input
-        # Apply window operation to this result
-        result = execute_node(node, item, backend, cache)
-        push!(all_results, result)
-    end
-    return all_results
+    return ReductionResult[execute_node(node, item, backend, cache) for item in input]
 end
 
-"""
-    execute_node(node::StatsNode, input, backend, cache)
-
-Execute a statistics node.
-"""
-function execute_node(node::StatsNode{S}, input::AbstractArray, backend, cache) where S
-    # Single array - compute stat directly
-    # S is a Symbol from Val{S} in the node type
-    stat = create_stat(S, eltype(input))
-    fit_window!(stat, input)
-    
-    return ReductionResult(OnlineStats.value(stat), size(input))
-end
-
-function execute_node(node::StatsNode{S}, input::ReductionResult, backend, cache) where S
-    # Extract array from ReductionResult
-    arr = input.data
-    
-    # Handle scalar input (can't compute stat over single value meaningfully)
-    if arr isa Number
-        return input  # Return as-is
-    end
-    
-    stat = create_stat(S, eltype(arr))
-    fit_window!(stat, arr)
-    
-    return ReductionResult(OnlineStats.value(stat), size(arr))
-end
-
-function execute_node(node::StatsNode{S}, input::Vector{ReductionResult}, backend, cache) where S
-    # Multiple window results - compute stat for each
-    results = ReductionResult[]
-    for item in input
-        T = eltype(item.data)
-        stat = create_stat(S, T)
-        fit_window!(stat, item.data)
-        push!(results, ReductionResult(OnlineStats.value(stat), item.shape))
-    end
-    return results
-end
-
-function execute_node(node::StatsNode{S}, input::Vector{Any}, backend, cache) where S
-    # Handle Vector{Any} from execution engine
-    # Check if all elements are ReductionResult
-    if all(x -> x isa ReductionResult, input)
-        return execute_node(node, ReductionResult[input...], backend, cache)
-    else
-        error("StatsNode received Vector{Any} with non-ReductionResult elements")
-    end
-end
 
 """
     _execute_multi_input(node, input_ids, results, backend, cache)

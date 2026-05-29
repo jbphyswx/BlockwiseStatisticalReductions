@@ -82,7 +82,7 @@ These unlock new use cases and interop with external code.
 - [ ] **Fast options structs**
   Replace scattered keyword arguments with composable options structs
   (`ReductionOptions`, `TowerOptions`, etc.) for controlling behavior across
-  the package. Should be `isbits`-compatible where possible. Similar to
+  the package. Should be `isbits`-compatible. Similar to
   `SolverOptions` patterns in DifferentialEquations.jl.
 
 ---

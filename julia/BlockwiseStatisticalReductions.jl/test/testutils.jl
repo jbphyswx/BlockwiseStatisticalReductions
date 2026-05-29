@@ -1,22 +1,24 @@
+using Random: Random
+
 """
     make_test_array(shape::Tuple; T=Float64, seed=1234)
 
 Create a test array with reproducible random values.
 """
 function make_test_array(shape::Tuple; T=Float64, seed=1234)
-    rng = MersenneTwister(seed)
+    rng = Random.MersenneTwister(seed)
     return rand(rng, T, shape...)
 end
 
 """
-    make_test_array(shape::Tuple, ::Type{CuArray}; T=Float64, seed=1234)
+    make_test_array_gpu(shape::Tuple; T=Float64, seed=1234)
 
-Create a GPU test array (requires CUDA).
+Create a GPU test array (requires CUDA extension to be loaded).
 """
-function make_test_array(shape::Tuple, ::Type{CuArray}; T=Float64, seed=1234)
-    @static if isdefined(BlockwiseStatisticalReductions, :CuArray)
+function make_test_array_gpu(shape::Tuple; T=Float64, seed=1234)
+    if isdefined(BlockwiseStatisticalReductions, :CuArray)
         arr = make_test_array(shape; T=T, seed=seed)
-        return CuArray(arr)
+        return BlockwiseStatisticalReductions.CuArray(arr)
     else
         error("CUDA not available")
     end

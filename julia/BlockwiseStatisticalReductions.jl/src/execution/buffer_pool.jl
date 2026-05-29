@@ -153,7 +153,7 @@ end
 #
 
 """
-    create_buffer_pool_for_factors(T::Type, input_shape::NTuple{N,Int}, factors::Vector{Int}) where N
+    create_buffer_pool_for_factors(T::Type, input_shape::NTuple{N,Int}, factors) where N
 
 Create a LevelBufferPool configured for multi-resolution reduction.
 
@@ -167,7 +167,7 @@ buf = acquire_level!(pool, 2)
 release_level!(pool, 2, buf)
 ```
 """
-function create_buffer_pool_for_factors(T::Type, input_shape::NTuple{N,Int}, factors::AbstractVector{Int}) where N
+function create_buffer_pool_for_factors(T::Type, input_shape::NTuple{N,Int}, factors) where N
     pool = LevelBufferPool(T, N)
     
     for factor in factors

@@ -10,7 +10,7 @@ using Serialization: Serialization
 using Statistics: Statistics
 using Distributed: Distributed
 
-export WindowConfig, ReductionPlan, ReductionResult
+export WindowConfig, ReductionPlan, ReductionResult, ReductionNode, SufficientStatsNode
 export AbstractExecutionBackend, CPUBackend, DistributedBackend, GPUBackend
 export AbstractStorage, MemoryStorage, DiskStorage, PlanCache
 export rolling_views, tiled_blocks, validate_window_config
@@ -31,9 +31,11 @@ export covariance_from_moments, variance_from_moments
 export blockwise_product_mean, blockwise_product_moments
 
 # Multi-resolution planning
-export factor_sequence, build_multires_plan, build_optimal_multires_plan
-export execute_cached_multilevel, multiresolution_stats
-export CachedMultiLevelExecution
+export build_optimal_multires_plan, multiresolution_stats
+
+# Tower construction
+export seed_factor_ladder, build_factor_schedule
+export build_tower_plan, build_tower_plan_from_outputs
 
 # Buffer pool
 export BufferPool, LevelBufferPool
@@ -44,9 +46,6 @@ export create_buffer_pool_for_factors
 # Zero-allocation execution
 export ExecutionBuffers, allocate_buffers, execute!
 
-# Hybrid mode
-export HybridReductionSpec, HybridReductionResult
-export execute_hybrid, hybrid_reduction
 
 # Public API
 export blockwise_stats, blockwise_mean, blockwise_variance, blockwise_std
@@ -57,6 +56,14 @@ export blockwise_mean!, blockwise_variance!, blockwise_mean_variance!
 export blockwise_min!, blockwise_max!, blockwise_product_mean!
 export blockwise_joint_moments!
 
+# Merge kernels (hierarchical sufficient-statistics composition)
+export blockwise_sum!
+export blockwise_mean_M2!, blockwise_merge_mean_M2!
+export blockwise_mean_M2_M3!, blockwise_merge_mean_M2_M3!
+export blockwise_mean_C!, blockwise_merge_covariance!
+export blockwise_merge_raw_moments!
+export variance_from_M2, std_from_M2, skewness_from_M2_M3, covariance_from_C
+
 include("types.jl")
 include("backends.jl")
 include("storage.jl")
@@ -64,6 +71,7 @@ include("cache.jl")
 
 # Canonical blockwise kernels — loaded early so all other files can call them
 include("kernels/blockwise_kernels.jl")
+include("kernels/merge_kernels.jl")
 
 include("windows.jl")
 include("statistics/stats.jl")
@@ -71,7 +79,7 @@ include("statistics/core.jl")
 include("statistics/parallel_merge.jl")
 include("statistics/product_reductions.jl")
 include("plan.jl")
-include("plan_multires.jl")
+include("tower.jl")
 include("execution/buffer_pool.jl")
 include("hybrid_mode.jl")
 include("public_api.jl")

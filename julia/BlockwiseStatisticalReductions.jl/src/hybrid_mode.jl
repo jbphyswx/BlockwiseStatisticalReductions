@@ -85,7 +85,7 @@ end
 
 function _execute_blockwise_phase(data::AbstractArray{T,N}, 
                                    window::WindowConfig{N},
-                                   stats::Vector{Symbol}) where {T,N}
+                                   stats) where {T,N}
     
     # Calculate output dimensions
     out_dims = ntuple(i -> div(size(data, i), window.sizes[i]), N)
@@ -126,7 +126,7 @@ end
 function _compute_hybrid_blockwise_stats(data::AbstractArray{T,N},
                                         window_sizes::NTuple{N,Int},
                                         out_dims::NTuple{N,Int},
-                                        stats::Vector{Symbol}) where {T,N}
+                                        stats) where {T,N}
     
     # Return Dict for multi-stat
     results = Dict{Symbol, AbstractArray}()
@@ -139,7 +139,7 @@ end
 
 function _execute_sliding_phase(data::AbstractArray{T,N},
                                 window::WindowConfig{N},
-                                stats::Vector{Symbol}) where {T,N}
+                                stats) where {T,N}
     
     # Calculate output dimensions based on padding mode
     out_dims = _compute_sliding_output_dims(size(data), window.sizes, window.strides, window.padding)

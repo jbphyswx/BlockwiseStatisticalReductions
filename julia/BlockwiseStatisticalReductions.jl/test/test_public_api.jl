@@ -93,11 +93,14 @@ Test.@testset "blockwise_moments" begin
     Test.@test m[2] ≈ expected_m2
 end
 
-Test.@testset "blockwise_stats error on invalid window" begin
+Test.@testset "blockwise_stats non-even window truncates" begin
     data = randn(10, 10)
     
-    # 3 doesn't divide 10 evenly
-    Test.@test_throws ErrorException BlockwiseStatisticalReductions.blockwise_mean(data, (3, 3))
+    # 3 doesn't divide 10 evenly → truncates to 3 complete blocks (drops last element)
+    result = BlockwiseStatisticalReductions.blockwise_mean(data, (3, 3))
+    Test.@test size(result) == (3, 3)
+    # Verify first block is correct
+    Test.@test result[1, 1] ≈ Statistics.mean(data[1:3, 1:3])
 end
 
 Test.@testset "blockwise_stats 3D" begin

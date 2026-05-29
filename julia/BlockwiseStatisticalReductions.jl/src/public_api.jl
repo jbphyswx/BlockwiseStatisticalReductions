@@ -17,7 +17,7 @@ Compute multiple statistics on data using blockwise (non-overlapping) windows.
 # Arguments
 - `data`: Input array (any dimension)
 - `window_sizes::NTuple{N,Int}`: Block size for each dimension
-- `stats::Vector{Symbol}`: Statistics to compute [:mean, :variance, :std, :min, :max]
+- `stats`: Statistics to compute — any iterable of Symbols, e.g. `[:mean, :variance]` or `(:mean, :std)`
 - `corrected::Bool`: Use Bessel's correction for variance (default true)
 
 # Returns
@@ -32,16 +32,11 @@ var_result = results[:variance]
 ```
 """
 function blockwise_stats(data::AbstractArray{T,N}, window_sizes::NTuple{N,Int};
-                         stats::AbstractVector{Symbol}=[:mean],
+                         stats=[:mean],
                          corrected::Bool=true) where {T,N}
     
     window = WindowConfig(window_sizes, window_sizes, :valid)
     
-    # Validate window divides evenly
-    for i in 1:N
-        size(data, i) % window_sizes[i] == 0 || 
-            error("Window size $(window_sizes[i]) does not divide dimension $(size(data,i)) evenly")
-    end
     
     return _compute_blockwise_stats_impl(data, window, stats; corrected=corrected)
 end

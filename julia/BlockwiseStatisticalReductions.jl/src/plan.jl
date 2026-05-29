@@ -72,17 +72,42 @@ rolling_window(builder::ReductionPlanBuilder, sizes::Int...; kwargs...) =
 
 """
     stats(builder::ReductionPlanBuilder, stat_type::Symbol)
-    stats(builder::ReductionPlanBuilder, stat_types::Vector{Symbol})
+    stats(builder::ReductionPlanBuilder, stat_types)
 
 Add a statistics computation node using Val for type stability.
 """
 function stats(builder::ReductionPlanBuilder, stat_type::Symbol)
-    node = StatsNode(Val(stat_type), :, next_id!(builder))
+    # Map stat symbol to kernel function
+    kernel = _stat_to_kernel(stat_type)
+    # Use a 1x1x... window (identity shape) since the windowing was
+    # already handled by the preceding rolling_window node
+    N = length(builder.input_shape)
+    unit_sizes = ntuple(_ -> 1, N)
+    config = WindowConfig(unit_sizes, unit_sizes, :valid)
+    # Output shape is same as current shape (stat applied element-wise to windows)
+    output_shape = builder.input_shape
+    node = ReductionNode(kernel, config, output_shape, next_id!(builder))
     return add_node!(builder, node)
 end
 
-function stats(builder::ReductionPlanBuilder, stat_types::Vector{Symbol})
-    return add_node!(builder, node)
+# Vector-of-symbols overload: use the first stat for the pipe node
+function stats(builder::ReductionPlanBuilder, stat_types::AbstractVector{Symbol})
+    return stats(builder, stat_types[1])
+end
+
+"""
+    _stat_to_kernel(stat_type::Symbol) -> Function
+
+Map a stat symbol to its canonical kernel function.
+"""
+function _stat_to_kernel(stat_type::Symbol)
+    stat_type == :mean && return blockwise_mean!
+    stat_type == :sum && return blockwise_sum!
+    stat_type == :min && return blockwise_min!
+    stat_type == :max && return blockwise_max!
+    (stat_type == :var || stat_type == :variance) && return blockwise_variance!
+    (stat_type == :std) && return blockwise_variance!  # caller wraps with sqrt
+    error("Unknown statistic type: $stat_type. Use a kernel function directly.")
 end
 
 """
@@ -120,11 +145,11 @@ function fork(builder::ReductionPlanBuilder, num_branches::Int)
 end
 
 """
-    merge!(builder::ReductionPlanBuilder, branches::Vector{ReductionPlanBuilder})
+    merge!(builder::ReductionPlanBuilder, branches)
 
 Merge multiple branches back into main builder, finalizing their edges.
 """
-function merge!(builder::ReductionPlanBuilder, branches::Vector{ReductionPlanBuilder})
+function merge!(builder::ReductionPlanBuilder, branches)
     # Update counter from branches (they share the counter reference)
     builder.counter = maximum(b.counter for b in branches)
     
@@ -223,117 +248,6 @@ function _compile_execution_sequence!(plan::ReductionPlan)
     return nothing
 end
 
-"""
-    build_optimal_multires_plan(input_shape::NTuple, target_factors::Vector{Int}, stats_types::Vector{Symbol}; dims=ntuple(i->i, N-1))
-
-Build an optimized multi-resolution plan with DAG reuse.
-
-Creates a proper DAG where intermediate results are reused:
-- 2x reduction feeds 4x (2*2), 8x (2*4), etc.
-- 3x reduction feeds 6x (3*2), 12x (3*4), etc.
-- Minimizes redundant computation through caching.
-
-Keyword argument `dims` specifies which dimensions to reduce (default: all except last).
-"""
-function build_optimal_multires_plan(input_shape::NTuple{N, Int}, target_factors::Vector{Int}, 
-                                      stats_types::Vector{Symbol}=[:mean];
-                                      dims=ntuple(i->i, N-1)) where N
-    
-    # Sort and deduplicate target factors
-    unique_factors = sort(unique(filter(f -> f > 0, target_factors)))
-    isempty(unique_factors) && error("No valid target factors")
-    
-    # Build factor sequence using gcd-based optimization
-    factor_chain = _build_optimal_factor_chain(unique_factors)
-    
-    builder = build_plan(input_shape)
-    output_map = Dict{Int, UInt64}()  # factor -> node_id
-    
-    # Process each factor in dependency order
-    for (factor, parent_factor, step_factor) in factor_chain
-        if parent_factor == 0
-            # Root level - reduce from input
-            # WindowNode computes block mean directly (no separate StatsNode needed)
-            window_sizes = ntuple(i -> i in dims ? factor : 1, N)
-            window = WindowConfig(window_sizes, window_sizes, :valid)
-            window_node = WindowNode(window, next_id!(builder))
-            add_node!(builder, window_node)
-            
-            output_map[factor] = window_node.id
-        else
-            # Get parent stats node id (this is the data source)
-            parent_id = output_map[parent_factor]
-            
-            # Add window node for reduction step
-            # WindowNode computes block mean directly (no separate StatsNode needed)
-            window_sizes = ntuple(i -> i in dims ? step_factor : 1, N)
-            window = WindowConfig(window_sizes, window_sizes, :valid)
-            window_node = WindowNode(window, next_id!(builder))
-            push!(builder.plan.nodes, window_node)
-            
-            # Link parent -> window node (window receives the reduced data)
-            edges = get!(builder.plan.edges, parent_id, UInt64[])
-            push!(edges, window_node.id)
-            
-            builder.current_node_id = window_node.id
-            
-            output_map[factor] = window_node.id
-        end
-    end
-    
-    # Set outputs to be all the final stats nodes
-    builder.plan.outputs = collect(values(output_map))
-    
-    return finalize_plan(builder)
-end
-
-"""
-    _build_optimal_factor_chain(target_factors::Vector{Int})
-
-Build optimal factor chain for DAG construction.
-Returns vector of (target_factor, parent_factor, step_factor) tuples.
-"""
-function _build_optimal_factor_chain(target_factors::Vector{Int})
-    sorted = sort(target_factors)
-    chain = Tuple{Int, Int, Int}[]
-    
-    for target in sorted
-        # Find best parent (largest factor that divides target)
-        best_parent = 0
-        best_step = target
-        
-        for candidate in chain
-            cand_factor = candidate[1]
-            if target % cand_factor == 0 && cand_factor > best_parent
-                step = div(target, cand_factor)
-                # Prefer step sizes that are powers of 2 (efficient)
-                if ispow2(step) || best_parent == 0
-                    best_parent = cand_factor
-                    best_step = step
-                end
-            end
-        end
-        
-        # Also check if target itself could be a parent of later factors
-        # by using factor decomposition
-        if best_parent == 0
-            # Try to decompose into smaller factors
-            for cand in sorted
-                if cand < target && target % cand == 0
-                    step = div(target, cand)
-                    if step < best_step
-                        best_parent = cand
-                        best_step = step
-                    end
-                end
-            end
-        end
-        
-        push!(chain, (target, best_parent, best_step))
-    end
-    
-    return chain
-end
 Base.convert(::Type{ReductionPlan}, builder::ReductionPlanBuilder) = finalize_plan(builder)
 
 """
@@ -387,9 +301,11 @@ function parallel_reduce(builder::ReductionPlanBuilder, reduce_fn::Function, dim
     
     # Add reduction to each branch
     for (i, branch) in enumerate(branches)
-        # Create dimension-specific reduction node
-        stat = create_stat(:mean, Float64)  # Default to mean, can be customized
-        node = StatsNode{typeof(stat)}(stat, dims[i], next_id!(branch))
+        # Create dimension-specific reduction node using mean kernel
+        N = length(branch.input_shape)
+        unit_sizes = ntuple(_ -> 1, N)
+        config = WindowConfig(unit_sizes, unit_sizes, :valid)
+        node = ReductionNode(blockwise_mean!, config, branch.input_shape, next_id!(branch))
         add_node!(branch, node)
     end
     

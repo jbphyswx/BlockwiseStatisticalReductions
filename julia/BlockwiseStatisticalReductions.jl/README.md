@@ -1,264 +1,387 @@
 # BlockwiseStatisticalReductions.jl
 
-Blockwise statistical reductions for Julia with support for multi-resolution computation, numerically stable parallel merges, memory-efficient fused operations, and hardware acceleration.
+Blockwise statistical reductions for N-dimensional arrays in Julia, with
+multi-resolution DAG planning, numerically stable parallel merges,
+memory-efficient fused operations, and hardware acceleration.
 
 ## Overview
-
-This package provides efficient blockwise and rolling-window statistical reductions for N-dimensional arrays, with focus on:
-
-- **Mergeable statistics**: Numerically stable variance and covariance via Welford/Chan/Pebay algorithms
-- **Multi-resolution execution**: Compute statistics at multiple scales with automatic caching
-- **Product coarsening**: Compute `<x*y>` and joint moments without intermediate allocations
-- **Plan-based execution**: Build and execute reduction DAGs with fork/merge support
-- **Hardware acceleration**: SIMD vectorization and GPU kernels (CUDA)
-- **Distributed computing**: Multi-node reductions with optimized scheduling
-- **Python parity**: Numba kernels, Dask integration, Xarray accessors
-
-## Core Features
-
-### 1. Mergeable Statistics Accumulators
-
-Online statistics accumulators that support numerically stable parallel merges for hierarchical reductions:
 
 ```julia
 using BlockwiseStatisticalReductions
 
-# Variance accumulator with Welford's algorithm
+# Quick start: blockwise mean of 10×10×5 blocks
+means = blockwise_mean(data, (10, 10, 5))
+
+# Multi-resolution tower: compute means at 2×, 4×, 8× in one DAG
+plan = build_optimal_multires_plan((128, 128, 8), [2, 4, 8], [:mean])
+results = execute(plan, data)
+```
+
+### Key capabilities
+
+- **Mergeable statistics** — Numerically stable variance and covariance via
+  Welford/Chan/Pebay algorithms with `O(1)` parallel merge
+- **Multi-resolution DAG planning** — `build_tower_plan` constructs a BFS
+  lattice of output shapes and wires a DAG that maximizes intermediate reuse,
+  with per-dimension factor sets and floor constraints
+- **Product coarsening** — Compute `⟨x·y⟩` and joint moments without
+  materializing intermediate arrays
+- **Zero-allocation execution** — Pre-allocate buffers with `allocate_buffers`,
+  then call `execute!` repeatedly with no GC pressure
+- **Hardware acceleration** — SIMD kernels, GPU extension stubs (CUDA.jl),
+  and distributed multi-node scheduling
+- **Hybrid mode** — Compose blockwise coarsening with sliding-window analysis
+
+---
+
+## 1. Public API — Convenience Functions
+
+High-level wrappers for common blockwise operations.  These accept raw arrays
+and return results directly — no plan construction needed.
+
+```julia
+# Single statistic
+means     = blockwise_mean(data, (10, 10, 5))
+variances = blockwise_variance(data, (10, 10, 5); corrected=true)
+stds      = blockwise_std(data, (10, 10, 5))
+
+# Multiple statistics in one pass (fused mean+variance kernel)
+results = blockwise_stats(data, (10, 10, 5); stats=[:mean, :variance, :min, :max])
+results[:mean]      # Array
+results[:variance]  # Array
+
+# Covariance between two co-located fields
+covs = blockwise_covariance(ql, w, (10, 10, 5))
+
+# Raw moments up to any order
+moments = blockwise_moments(data, (10, 10), 4)   # NTuple{4,Float64} per block
+moments[i, j][1]  # first moment (mean)
+moments[i, j][4]  # fourth moment
+```
+
+---
+
+## 2. Mergeable Statistics Accumulators
+
+Online accumulators that support numerically stable `O(1)` parallel merge,
+suitable for hierarchical reductions, distributed computing, and streaming.
+
+```julia
+# Variance accumulator (Welford's algorithm)
 acc = VarianceAccumulator{Float64}()
 fit!(acc, data)
-mean_val = Statistics.mean(acc)
-var_val = Statistics.var(acc)
+Statistics.mean(acc)
+Statistics.var(acc)
 
-# Parallel merge (Chan's algorithm)
-acc1 = VarianceAccumulator{Float64}()
-fit!(acc1, data1)
-acc2 = VarianceAccumulator{Float64}()
-fit!(acc2, data2)
-merged = merge(acc1, acc2)  # Same as computing on [data1; data2]
+# Parallel merge (Chan's algorithm) — exact as computing on concatenated data
+merged = merge(acc1, acc2)
 
 # Covariance accumulator (Pebay's algorithm)
 acc_xy = CovarianceAccumulator{Float64}()
 fit!(acc_xy, x, y)
-cov_val = Statistics.cov(acc_xy)
+Statistics.cov(acc_xy)
 
 # Raw moments (arbitrary order)
-acc_moments = RawMomentsAccumulator{Float64,4}()  # Up to 4th moment
-fit!(acc_moments, data)
-m1, m2, m3, m4 = acc_moments.moments
+acc_m = RawMomentsAccumulator{Float64,4}()
+fit!(acc_m, data)
+m1, m2, m3, m4 = acc_m.moments
 ```
 
-### 2. Product Coarsening
+---
 
-Compute statistics of products without materializing intermediate arrays:
+## 3. Product Coarsening
+
+Compute statistics of products without materializing intermediate arrays.
 
 ```julia
-# Compute <x*y> without allocating x.*y
+# ⟨x·y⟩ without allocating x .* y
 result = product_mean(x, y, window_config)
 
-# Compute joint moments (mean, variance, covariance) in one fused pass
-moments = product_moments(x, y, window_config)
-mean_x = moments.mean_x
-var_y = moments.var_y
-cov_xy = moments.cov_xy
+# Joint moments (mean_x, mean_y, var_x, var_y, cov_xy) in one fused pass
+jm = product_moments(x, y, window_config)
+jm.mean_x; jm.var_y; jm.cov_xy
+
+# Identities for deriving statistics from raw moments
+cov_xy = covariance_from_moments(mean_x, mean_y, mean_xy)
+var_x  = variance_from_moments(mean_x, mean_x_sq)
 ```
 
-### 3. Multi-Resolution Execution
+---
 
-Compute statistics at multiple scales with automatic caching:
+## 4. Multi-Resolution Planning (Tower DAG)
+
+The tower plan builder is the canonical way to compute statistics at multiple
+spatial scales.  It uses BFS over the N-dimensional output-shape lattice to
+discover all reachable resolutions, then wires a DAG that reuses every
+intermediate computation.
+
+### 4.1 Uniform factors across selected dims
 
 ```julia
-# Compute variance at 2x, 4x, 8x, 10x reductions
-results = execute_cached_multilevel(data, [2, 4, 8, 10], [:variance])
-
-# Access results
-var_2x = results[2].data
-var_4x = results[4].data
-
-# Or use the high-level API
-results = multiresolution_stats(data, [2, 4, 8], stats=[:mean, :variance])
-mean_2x = results[2].data[:mean]
-var_4x = results[4].data[:variance]
+# 128×128×8 input, reduce by 2×, 4×, 8× in dims 1 and 2
+plan = build_optimal_multires_plan((128, 128, 8), [2, 4, 8], [:mean]; dims=(1, 2))
+results = execute(plan, data)   # Vector{ReductionResult}
 ```
 
-### 4. Buffer Pool for Zero-Allocation Reductions
-
-Preallocate reusable buffers for hierarchical reductions:
+### 4.2 Tower plan with explicit base block
 
 ```julia
-# Create pool for multi-resolution factors
-pool = create_buffer_pool_for_factors(Float64, (100, 100, 50), [2, 4, 8, 10])
+# 6000×6000×8 data, 100×100 base blocks, tower by 2s and 3s
+plan = build_tower_plan((6000, 6000, 8);
+    base_block  = (100, 100, 1),
+    tower_factors = [2, 3],
+    stats = [:mean],
+    dims  = (1, 2))
+# Produces: 60×60×8, 30×30×8, 20×20×8, 10×10×8, 5×5×8, ...
+```
 
-# Acquire buffer for factor 4 level
-buf = acquire_level!(pool, 4)  # Shape: (25, 25, 12)
+### 4.3 Per-dimension factors and floor constraints
 
-# Use for computation
-compute_variance!(buf, data)
+Different dimensions can scale with different factor sets and have independent
+minimum output size constraints — essential for data with non-square physical
+grids (e.g., equal x/y but limited z aggregation).
 
-# Release back to pool
+```julia
+# 6000×6000×64 data, base 100×100×4 blocks
+# x,y scale by factors of 2 and 3; z only halves; z never goes below 4
+plan = build_tower_plan((6000, 6000, 64);
+    base_block    = (100, 100, 4),
+    tower_factors = ([2, 3], [2, 3], [2]),   # per-dimension factor sets
+    min_output_size = (1, 1, 4),             # z floor at 4 cells
+    dims = (1, 2, 3))
+# Produces shapes like 60×60×16, 30×30×8, 20×20×8, 10×10×4, ...
+# z naturally stops reducing once it hits 4
+```
+
+### 4.4 Building from target output shapes
+
+```julia
+plan = build_tower_plan_from_outputs((600, 600, 8),
+    [(60, 60, 8), (30, 30, 8), (10, 10, 8)];
+    dims=(1, 2))
+```
+
+### 4.5 Factor schedule generation
+
+Build factor towers from seed ladders (useful for experiment sweeps):
+
+```julia
+build_factor_schedule(128; seeds=(1,))         # [1, 2, 4, 8, 16, 32, 64, 128]
+build_factor_schedule(128; seeds=(1, 3))       # [1, 2, 3, 4, 6, 8, 12, ..., 128]
+build_factor_schedule(60; seeds=(1,), min_factor=2, include_full=true)  # [2, 4, 8, 16, 32, 60]
+```
+
+### 4.6 High-level convenience
+
+```julia
+# Build + execute in one call
+results = multiresolution_stats(data, [2, 4, 8]; stats=[:mean])
+```
+
+---
+
+## 5. Zero-Allocation Execution
+
+For tight loops or real-time pipelines, pre-allocate all output buffers once
+and reuse across calls:
+
+```julia
+plan = build_optimal_multires_plan((128, 128, 8), [2, 4, 8], [:mean])
+bufs = allocate_buffers(plan, data)
+
+# First call warms up; subsequent calls allocate nothing
+outputs = execute!(plan, bufs, data)
+
+# Feed new data through the same plan+buffers
+outputs = execute!(plan, bufs, new_data)
+```
+
+---
+
+## 6. Buffer Pool
+
+Manage reusable buffer pools for hierarchical reductions without per-call
+allocation:
+
+```julia
+pool = create_buffer_pool_for_factors(Float64, (100, 100, 50), [2, 4, 8])
+
+buf = acquire_level!(pool, 4)   # Shape: (25, 25, 12)
+# ... use buf ...
 release_level!(pool, 4, buf)
 
-# Or use with automatic cleanup
+# Or with automatic cleanup
 result = with_buffer!((100, 100, 50), pool) do buf
     compute_something!(buf, data)
-    return sum(buf)
 end
 ```
 
-### 4. Public API Convenience Functions
+---
 
-High-level wrappers for common blockwise operations:
+## 7. Hybrid Mode (Blockwise + Sliding)
+
+Compose blockwise coarsening with sliding-window analysis:
 
 ```julia
-# Single statistic
-means = blockwise_mean(data, (10, 10, 5))
-variances = blockwise_variance(data, (10, 10, 5), corrected=true)
-stds = blockwise_std(data, (10, 10, 5))
+result = hybrid_reduction(data;
+    block_sizes   = (10, 10, 5),
+    sliding_sizes = (3, 3, 3),
+    block_stats   = [:mean],
+    sliding_stats = [:variance])
 
-# Multiple statistics in one pass
-results = blockwise_stats(data, (10, 10, 5), stats=[:mean, :variance, :min, :max])
-mean_result = results[:mean]
-var_result = results[:variance]
-
-# Covariance between two fields
-covs = blockwise_covariance(ql, w, (10, 10, 5))
-
-# Raw moments up to any order
-moments = blockwise_moments(data, (10, 10), 4)  # Up to 4th moment
-mean_val = moments[i, j][1]  # First moment
+result.block_result.data      # 10×10×10 coarsened
+result.sliding_result.data    # sliding variance on coarsened data
 ```
 
-### 5. Hybrid Mode (Blockwise + Sliding)
+---
 
-Combine blockwise coarsening with sliding window analysis:
+## 8. In-Place Canonical Kernels
+
+Low-level kernels that write directly into pre-allocated output arrays.
+These form the hot inner loops that all higher-level APIs call.
 
 ```julia
-# Blockwise coarsening followed by sliding analysis on coarsened data
-result = hybrid_reduction(data,
-    block_sizes=(10, 10, 5),      # 10x10x5 blocks
-    sliding_sizes=(3, 3, 3),       # 3x3x3 sliding window
-    block_stats=[:mean],            # Mean of each block
-    sliding_stats=[:variance]       # Variance in sliding windows
-)
+# Blockwise reductions (non-overlapping windows)
+blockwise_mean!(out, data, (10, 10, 5))
+blockwise_variance!(out, data, (10, 10, 5))
+blockwise_mean_variance!(means, variances, data, (10, 10, 5))
+blockwise_min!(out, data, (10, 10, 5))
+blockwise_max!(out, data, (10, 10, 5))
+blockwise_product_mean!(out, x, y, (10, 10, 5))
+blockwise_joint_moments!(mean_x, mean_y, mean_xy, x, y, (10, 10, 5))
 
-# Access results
-coarsened = result.block_result.data       # Shape: (10, 10, 10)
-sliding_analysis = result.sliding_result.data  # On coarsened data
+# Merge kernels (hierarchical sufficient-statistics composition)
+blockwise_mean_M2!(mean_out, M2_out, data, window_sizes)
+blockwise_merge_mean_M2!(mean_out, M2_out, means, M2s, counts, window_sizes)
+blockwise_merge_covariance!(cov_out, mean_x, mean_y, C, counts, window_sizes)
+blockwise_merge_raw_moments!(out_moments, moment_arrs, window_sizes)
 ```
 
-### 4. Window Configurations and Plans
+---
 
-Define reduction windows and build execution plans:
+## 9. Window Configurations
 
 ```julia
-# Blockwise window (non-overlapping)
+# Blockwise (non-overlapping, no padding)
 window = WindowConfig((10, 10, 5), (10, 10, 5), :valid)
 
-# Rolling window (overlapping)
+# Rolling (sliding with stride 1, same-size output)
 rolling = WindowConfig((5, 5, 5), (1, 1, 1), :same)
 
-# Build reduction plan
-plan = build_plan(window)
-plan = add_stats!(plan, :mean)
-result = execute(plan, data)
+# Strided
+strided = WindowConfig((8, 8, 4), (4, 4, 2), :valid)
 ```
+
+---
+
+## 10. Hardware Acceleration
+
+### SIMD kernels (CPU)
+
+```julia
+simd_blockwise_mean!(out, data, window_sizes)
+simd_product_moments!(out_mx, out_my, out_mxy, x, y, window_sizes)
+```
+
+### GPU kernels (requires CUDA.jl extension)
+
+```julia
+cuda_blockwise_mean!(out, data, window_sizes)
+cuda_blockwise_variance!(out, data, window_sizes)
+```
+
+### Distributed computing
+
+```julia
+distributed_multiresolution_stats(data, factors, stats; workers=nworkers())
+```
+
+---
 
 ## API Reference
 
 ### Types
 
-- `VarianceAccumulator{T}` - Mean and variance with parallel merge
-- `CovarianceAccumulator{T}` - Covariance with parallel merge  
-- `RawMomentsAccumulator{T,N}` - Raw moments up to order N
-- `JointMomentsResult` - Container for joint moment computations
-- `WindowConfig` - Window specification for reductions
-- `ReductionPlan` - DAG-based reduction execution plan
-- `BufferPool{T,N}` - Reusable buffer pool
-- `LevelBufferPool{T,N}` - Multi-level buffer pool
-- `HybridReductionSpec` - Hybrid mode specification
-- `HybridReductionResult` - Hybrid mode result container
+| Type | Description |
+|------|-------------|
+| `WindowConfig{D}` | D-dimensional window specification (sizes, strides, padding) |
+| `ReductionPlan` | DAG of reduction nodes with pre-compiled execution sequence |
+| `ReductionResult{T}` | Computed result with shape metadata |
+| `ExecutionBuffers{T,N}` | Pre-allocated buffer set for zero-allocation `execute!` |
+| `VarianceAccumulator{T}` | Online mean + variance (Welford) with `O(1)` merge |
+| `CovarianceAccumulator{T}` | Online covariance (Pebay) with `O(1)` merge |
+| `RawMomentsAccumulator{T,K}` | Online raw moments up to order K |
+| `JointMomentsResult` | Container for fused joint moment computations |
+| `BufferPool{T,N}` | Reusable buffer pool |
+| `LevelBufferPool{T,N}` | Multi-level buffer pool for hierarchical reductions |
+| `HybridReductionSpec` | Specification for hybrid blockwise + sliding workflow |
+| `HybridReductionResult` | Result container for hybrid mode |
+| `AbstractExecutionBackend` | Base type (`CPUBackend`, `GPUBackend`, `DistributedBackend`) |
+| `AbstractStorage` | Base type (`MemoryStorage`, `DiskStorage`) |
+| `PlanCache` | Cache wrapper for plan intermediate results |
 
-### Functions
+### Functions — Public API
 
-**Accumulators:**
-- `fit!(acc, x)` / `fit!(acc, x, y)` - Add samples to accumulator
-- `merge(acc1, acc2)` - Parallel merge of accumulators
-- `merge_many(counts, means, sum_sq_devs)` - Batch merge
-- `Statistics.mean(acc)`, `Statistics.var(acc)`, `Statistics.cov(acc)` - Extract statistics
+| Function | Description |
+|----------|-------------|
+| `blockwise_mean(data, window_sizes)` | Blockwise mean |
+| `blockwise_variance(data, window_sizes; corrected)` | Blockwise variance |
+| `blockwise_std(data, window_sizes; corrected)` | Blockwise standard deviation |
+| `blockwise_stats(data, window_sizes; stats)` | Multiple statistics (fused) |
+| `blockwise_covariance(x, y, window_sizes)` | Blockwise covariance |
+| `blockwise_moments(data, window_sizes, max_order)` | Raw moments per block |
 
-**Product Coarsening:**
-- `product_mean(x, y, window)` - Mean of products without allocation
-- `product_moments(x, y, window)` - Joint moments in one pass
-- `covariance_from_moments(mean_x, mean_y, mean_xy)` - Covariance from moments identity
-- `variance_from_moments(mean, mean_sq)` - Variance from moments identity
+### Functions — Multi-Resolution
 
-**Multi-Resolution:**
-- `factor_sequence(start, targets)` - Build factor sequence for caching
-- `execute_cached_multilevel(data, factors, stats)` - Execute with caching
-- `multiresolution_stats(data, factors; stats=[:mean])` - High-level API
+| Function | Description |
+|----------|-------------|
+| `build_tower_plan(input_shape; base_block, tower_factors, ...)` | Canonical BFS+DAG builder with per-dim support |
+| `build_optimal_multires_plan(input_shape, factors, stats; dims)` | Factor-based wrapper (delegates to `build_tower_plan`) |
+| `build_tower_plan_from_outputs(input_shape, targets; ...)` | Build from target output shapes |
+| `multiresolution_stats(data, factors; stats)` | Build + execute in one call |
+| `seed_factor_ladder(n, seed; min_factor)` | Generate `seed × 2^k` tower |
+| `build_factor_schedule(n; seeds, min_factor, include_full)` | Merged multi-seed tower |
+| `execute(plan, data; backend, cache)` | Execute a `ReductionPlan` |
+| `allocate_buffers(plan, data)` | Pre-allocate output buffers |
+| `execute!(plan, buffers, data)` | Zero-allocation execution |
 
-**Public API:**
-- `blockwise_mean(data, window_sizes)` - Blockwise mean
-- `blockwise_variance(data, window_sizes; corrected=true)` - Blockwise variance
-- `blockwise_std(data, window_sizes; corrected=true)` - Blockwise standard deviation
-- `blockwise_stats(data, window_sizes; stats=[:mean])` - Multiple statistics
-- `blockwise_covariance(x, y, window_sizes)` - Blockwise covariance
-- `blockwise_moments(data, window_sizes, max_order)` - Raw moments
+### Functions — Accumulators
 
-**Buffer Pool:**
-- `BufferPool{T,N}(max_buffers)` - Create reusable buffer pool
-- `acquire!(pool, shape)` - Get buffer from pool (allocates if needed)
-- `release!(pool, buffer)` - Return buffer to pool
-- `with_buffer!(shape, pool) do ... end` - Automatic buffer cleanup
-- `LevelBufferPool` - Multi-level pool for hierarchical reductions
-- `create_buffer_pool_for_factors(T, input_shape, factors)` - Configured pool
+| Function | Description |
+|----------|-------------|
+| `fit!(acc, x)` / `fit!(acc, x, y)` | Add samples |
+| `merge(acc1, acc2)` | Parallel merge (Chan/Pebay) |
+| `merge_many(counts, means, M2s)` | Batch merge |
+| `Statistics.mean(acc)`, `Statistics.var(acc)` | Extract statistics |
 
-**Hybrid Mode:**
-- `execute_hybrid(data, spec)` - Blockwise + sliding execution
-- `hybrid_reduction(data; block_sizes, sliding_sizes, ...)` - Convenience API
-- `HybridReductionSpec` - Specification for hybrid workflow
+### Functions — Product Coarsening
 
-**Hardware Acceleration:**
-- `best_blockwise_mean(data, window_sizes)` - Auto-select CPU/GPU
-- `simd_blockwise_mean!(out, data, window_sizes)` - SIMD vectorized
-- `simd_product_moments!(...)` - Fused joint moments with SIMD
-- `cuda_blockwise_mean!`, `cuda_blockwise_variance!` - GPU kernels (requires CUDA.jl)
+| Function | Description |
+|----------|-------------|
+| `product_mean(x, y, window)` | `⟨x·y⟩` without intermediate allocation |
+| `product_moments(x, y, window)` | Joint moments in one fused pass |
+| `covariance_from_moments(mean_x, mean_y, mean_xy)` | Covariance identity |
+| `variance_from_moments(mean, mean_sq)` | Variance identity |
 
-**Distributed Computing:**
-- `distributed_multiresolution_stats(data, factors, stats)` - Multi-node reductions
-- `DistributedMultiResScheduler` - Optimized task scheduling
-- `create_shared_cache(shape, T)` - Node-local caching with SharedArrays
-
-## Benchmarks
-
-Run the benchmark suite to verify performance meets success criteria:
-
-```julia
-include("benchmark/benchmark_suite.jl")
-run_benchmarks()
-check_success_criteria()
-```
-
-**Target performance**: <2x overhead vs hand-optimized for 500×250×127 grids.
+---
 
 ## Design Principles
 
-- **No backwards compatibility baggage**: Clean, modern API without legacy cruft
-- **Fully qualified imports**: All external package functions use `Package.function()` pattern
-- **Zero-allocation hot paths**: Preallocate buffers and fuse loops where possible
-- **Numerical stability**: Use Welford/Chan/Pebay algorithms for variance/covariance
-- **Test-driven**: Comprehensive unit tests with mathematical invariants
+- **Fully qualified imports** — All external calls use `Package.function()`;
+  no bare `using` or `import` anywhere in source code
+- **Zero-allocation hot paths** — `execute!` + `ExecutionBuffers` for
+  pre-allocated repeated execution
+- **Numerical stability** — Welford/Chan/Pebay algorithms for variance,
+  covariance, and higher moments
+- **DAG-based planning** — Build once, execute many times; the DAG is
+  pre-compiled into a flat execution sequence with no runtime graph traversal
+- **Per-dimension generality** — Tower factors, floor constraints, and dims
+  selection are all per-dimension; no assumption of square or isotropic grids
+- **Test-driven** — 1300+ tests covering mathematical invariants, edge cases,
+  and allocation bounds
 
-## Implementation Status
+---
 
-**Completed:**
-- ✅ Phase 1: Core statistics (Variance/Covariance/RawMoments accumulators)
-- ✅ Phase 2: Advanced features (Multi-resolution, Buffer Pool, Hybrid Mode)
-- ✅ Phase 3: Public API (blockwise_*, product_*, convenience functions)
-- ✅ Phase 4: Python parity (Numba kernels, Dask, Xarray)
-- ✅ Phase 5: Testing (797+ Julia tests, Python tests, Integration tests)
-- ✅ Phase 6: Optimization (SIMD kernels, GPU extension stubs, Distributed scheduling)
+## Roadmap
 
-**TODO
-
-TODO: Add NaN support via extension (do we use NaNStatistics? idk the cannonical julia solution these days)
-TODO: Consider add note to README to consider use of FixedSizedArrays once it is more advanced.
+See [`docs/README.md`](docs/README.md) for the full TODO list and roadmap.

@@ -1,5 +1,5 @@
 Test.@testset "MemoryStorage" begin
-    storage = MemoryStorage()
+    storage = BlockwiseStatisticalReductions.MemoryStorage()
     
     # Store and retrieve
     key = UInt64(1)
@@ -17,7 +17,7 @@ Test.@testset "MemoryStorage" begin
 end
 
 Test.@testset "MemoryStorage with max_size" begin
-    storage = MemoryStorage(max_size=1000)
+    storage = BlockwiseStatisticalReductions.MemoryStorage(max_size=1000)
     Test.@test storage.max_size == 1000
     
     # Store multiple items
@@ -30,7 +30,7 @@ end
 
 Test.@testset "DiskStorage (serialization)" begin
     mktempdir() do dir
-        storage = DiskStorage(dir; format=:serialization)
+        storage = BlockwiseStatisticalReductions.DiskStorage(dir; format=:serialization)
         
         # Store
         key = UInt64(42)
@@ -53,7 +53,7 @@ end
 
 Test.@testset "clear! storage" begin
     # Memory
-    mem = MemoryStorage()
+    mem = BlockwiseStatisticalReductions.MemoryStorage()
     BlockwiseStatisticalReductions.store!(mem, UInt64(1), "test")
     Test.@test haskey(mem, UInt64(1))
     
@@ -63,7 +63,7 @@ Test.@testset "clear! storage" begin
     
     # Disk
     mktempdir() do dir
-        disk = DiskStorage(dir; format=:serialization)
+        disk = BlockwiseStatisticalReductions.DiskStorage(dir; format=:serialization)
         BlockwiseStatisticalReductions.store!(disk, UInt64(1), "test")
         
         BlockwiseStatisticalReductions.clear!(disk)
@@ -74,7 +74,7 @@ end
 
 Test.@testset "DiskStorage roundtrip with complex data" begin
     mktempdir() do dir
-        storage = DiskStorage(dir; format=:serialization)
+        storage = BlockwiseStatisticalReductions.DiskStorage(dir; format=:serialization)
         
         # Complex nested structure
         data = Dict(

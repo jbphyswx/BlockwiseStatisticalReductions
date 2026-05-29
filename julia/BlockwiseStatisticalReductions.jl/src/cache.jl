@@ -5,7 +5,8 @@ Generate a unique cache key for a plan node and input configuration.
 Uses operation semantics (not node.id) so identical operations share cache entries.
 """
 cache_key(node::WindowNode, input_shape) = hash((:window, node.config.sizes, node.config.strides, node.config.padding, input_shape))
-cache_key(node::StatsNode, input_shape) = hash((:stats, typeof(node.stat_type), node.dims, input_shape))
+cache_key(node::ReductionNode{F}, input_shape) where F = hash((:reduction, F, node.config.sizes, node.config.strides, node.config.padding, input_shape))
+cache_key(node::SufficientStatsNode{F,M}, input_shape) where {F,M} = hash((:sufstats, F, M, node.is_base, node.config.sizes, node.count_per_block, input_shape))
 cache_key(node::TreeNode, input_shape) = hash((:tree, node.arity, input_shape))
 cache_key(node::UserNode{F}, input_shape) where F = hash((:user, F, node.output_type, input_shape))
 

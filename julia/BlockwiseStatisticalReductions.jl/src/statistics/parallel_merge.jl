@@ -321,9 +321,9 @@ end
 #
 
 """
-    merge_all(accs::Vector{<:VarianceAccumulator})
+    merge_all(accs::AbstractVector{<:VarianceAccumulator})
 
-Merge a vector of variance accumulators.
+Merge a collection of variance accumulators.
 """
 function merge_all(accs::AbstractVector{VarianceAccumulator{T}}) where {T}
     isempty(accs) && return VarianceAccumulator{T}()
@@ -336,9 +336,9 @@ function merge_all(accs::AbstractVector{VarianceAccumulator{T}}) where {T}
 end
 
 """
-    merge_all(accs::Vector{<:CovarianceAccumulator})
+    merge_all(accs::AbstractVector{<:CovarianceAccumulator})
 
-Merge a vector of covariance accumulators.
+Merge a collection of covariance accumulators.
 """
 function merge_all(accs::AbstractVector{CovarianceAccumulator{T}}) where {T}
     isempty(accs) && return CovarianceAccumulator{T}()
@@ -351,9 +351,9 @@ function merge_all(accs::AbstractVector{CovarianceAccumulator{T}}) where {T}
 end
 
 """
-    merge_all(accs::Vector{<:RawMomentsAccumulator})
+    merge_all(accs::AbstractVector{<:RawMomentsAccumulator})
 
-Merge a vector of raw moments accumulators.
+Merge a collection of raw moments accumulators.
 """
 function merge_all(accs::AbstractVector{RawMomentsAccumulator{T,N}}) where {T,N}
     isempty(accs) && return RawMomentsAccumulator{T,N}()

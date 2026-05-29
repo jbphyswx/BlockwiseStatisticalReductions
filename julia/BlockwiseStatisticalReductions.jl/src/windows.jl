@@ -186,11 +186,11 @@ function apply_windowed(f, array::AbstractArray, config::WindowConfig;
 end
 
 """
-    tree_reduce_impl(items::Vector{T}, op, backend::CPUBackend) where T
+    tree_reduce_impl(items, op, backend::CPUBackend)
 
 Tree reduction implementation for CPU backend.
 """
-function tree_reduce_impl(items::Vector{T}, op, backend::CPUBackend) where T
+function tree_reduce_impl(items, op, backend::CPUBackend)
     if length(items) == 0
         return nothing
     elseif length(items) == 1
@@ -198,6 +198,7 @@ function tree_reduce_impl(items::Vector{T}, op, backend::CPUBackend) where T
     end
     
     # Pairwise reduction
+    T = eltype(items)
     while length(items) > 1
         new_items = Vector{T}(undef, div(length(items) + 1, 2))
         

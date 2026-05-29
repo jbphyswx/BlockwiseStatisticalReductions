@@ -1,0 +1,6 @@
+[deps]
+BlockwiseStatisticalReductions = "8f3a3c1b-9f5c-4b2a-9e3d-5f3c8a9e5b2c"
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+
+[compat]
+Documenter = "1"

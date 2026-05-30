@@ -31,7 +31,8 @@ export covariance_from_moments, variance_from_moments
 export blockwise_product_mean, blockwise_product_moments
 
 # Multi-resolution planning
-export build_optimal_multires_plan, multiresolution_stats
+export build_optimal_multires_plan, multiresolution_stats, multiresolution_products
+export build_multires_plan_groups
 
 # Tower construction
 export seed_factor_ladder, build_factor_schedule
@@ -80,6 +81,7 @@ include("statistics/parallel_merge.jl")
 include("statistics/product_reductions.jl")
 include("plan.jl")
 include("tower.jl")
+include("tower_groups.jl")
 include("execution/buffer_pool.jl")
 include("hybrid_mode.jl")
 include("public_api.jl")

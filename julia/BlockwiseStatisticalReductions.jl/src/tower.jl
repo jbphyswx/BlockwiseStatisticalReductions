@@ -547,22 +547,27 @@ function build_optimal_multires_plan(input_shape::NTuple{N, Int}, target_factors
         end
 
         # Also consider input_shape as parent (direct one-step reduction)
+        # For non-even divisions: accept truncation, compute actual output shape
         input_valid = true
         for i in 1:N
             if i in dims
                 w = div(input_shape[i], target[i])
-                if w < 1 || div(input_shape[i], w) != target[i]
+                if w < 1
                     input_valid = false
                     break
                 end
             end
         end
         if input_valid
+            # Compute actual output shape (may differ from target due to truncation)
+            actual_shape = ntuple(i -> i in dims ? div(input_shape[i], div(input_shape[i], target[i])) : input_shape[i], N)
             input_window = ntuple(i -> i in dims ? div(input_shape[i], target[i]) : 1, N)
             # Prefer an existing intermediate over input_shape (to share computation)
             if best_parent === nothing
                 best_parent = input_shape
                 best_window = input_window
+                # Use actual shape as the target (handles non-even division truncation)
+                target = actual_shape
             end
         end
 
@@ -811,5 +816,142 @@ Convert M2 (sum of squared deviations) array to variance array.
 function _m2_to_variance(M2::AbstractArray{T}, count::Int; corrected::Bool=true) where T
     denom = corrected ? T(count - 1) : T(count)
     return M2 ./ denom
+end
+
+
+#
+# ─── Multi-field product moments API ──────────────────────────────────────────
+#
+
+"""
+    multiresolution_products(fields::NamedTuple, product_pairs::NamedTuple,
+                             target_factors;
+                             dims=ntuple(i->i, ndims(first(fields))-1))
+
+High-level API for multi-resolution product moment computations.
+
+Computes means for all fields and M2/C (central moment sums) for product pairs
+across multiple resolution levels with automatic intermediate reuse.
+
+# Arguments
+- `fields`: NamedTuple of input arrays (e.g., `(u=data_u, v=data_v, w=data_w)`)
+- `product_pairs`: NamedTuple of product pairs `(output_name = (field_x, field_y), ...)`
+  For self-products (variance), use `(field, field)`.
+- `target_factors`: Vector of reduction factors (e.g., `[2, 4, 8]`)
+- `dims`: Which dimensions to reduce (default: all except last)
+
+# Returns
+NamedTuple with:
+- `means`: Dict{factor, NamedTuple{field_name => array}}
+- `moments`: Dict{factor, NamedTuple{product_name => M2_or_C_array}}
+- `n_samples`: Dict{factor, sample_count_per_block}
+
+# Example
+```julia
+fields = (u = randn(100, 100, 10), v = randn(100, 100, 10))
+products = (u_u = (:u, :u), u_v = (:u, :v), v_v = (:v, :v))
+results = multiresolution_products(fields, products, [2, 4, 8])
+
+# Access results
+results.means[4].u      # mean of u at 4x coarsening
+results.moments[4].u_u  # M2 sum for u at 4x coarsening
+results.moments[4].u_v  # C sum for u*v at 4x coarsening
+```
+"""
+function multiresolution_products(fields::NamedTuple{FN}, product_pairs::NamedTuple{PN},
+                                  target_factors;
+                                  dims=ntuple(i->i, ndims(first(fields))-1)) where {FN, PN}
+    input_shape = size(first(fields))
+    N = length(input_shape)
+    sorted_factors = sort(unique(filter(f -> f > 0, collect(Int, target_factors))))
+    isempty(sorted_factors) && return (means=Dict(), moments=Dict(), n_samples=Dict())
+
+    # Build plan for means once, execute for all fields
+    mean_plan = build_optimal_multires_plan(input_shape, sorted_factors, [:mean]; dims=dims)
+
+    # Compute means for all fields
+    means_by_factor = Dict{Int, Dict{Symbol, AbstractArray}}()
+    computed_factors = Int[]
+    
+    for field_name in FN
+        field_data = getproperty(fields, field_name)
+        results = execute(mean_plan, field_data)
+        
+        # Track which factors were actually computed (some may be filtered out)
+        if isempty(computed_factors)
+            for r in results
+                # Infer factor from output shape
+                out_shape = size(r.data)
+                factor = div(input_shape[first(dims)], out_shape[first(dims)])
+                push!(computed_factors, factor)
+            end
+        end
+        
+        for (i, factor) in enumerate(computed_factors)
+            factor_dict = get!(means_by_factor, factor) do
+                Dict{Symbol, AbstractArray}()
+            end
+            factor_dict[field_name] = results[i].data
+        end
+    end
+
+    # Convert to NamedTuples
+    means_nt = Dict{Int, NamedTuple{FN, typeof(Tuple(values(fields)))}}()
+    n_samples = Dict{Int, Int}()
+    for factor in computed_factors
+        factor_dict = means_by_factor[factor]
+        means_nt[factor] = NamedTuple{FN}(ntuple(i -> factor_dict[FN[i]], length(FN)))
+        # Compute samples per block
+        count = 1
+        for d in 1:N
+            d in dims || continue
+            count *= div(input_shape[d], size(factor_dict[first(FN)])[d])
+        end
+        n_samples[factor] = count
+    end
+
+    # Build product moments for each pair
+    # For now, compute per-factor directly (BSR doesn't yet have multi-level product moment plans)
+    moments_by_factor = Dict{Int, Dict{Symbol, AbstractArray}}()
+    for pn in PN
+        x_name, y_name = getproperty(product_pairs, pn)
+        x_field = getproperty(fields, x_name)
+        y_field = getproperty(fields, y_name)
+
+        # Only compute moments for factors that were actually computed
+        for factor in computed_factors
+            window_sizes = ntuple(d -> d in dims ? factor : 1, N)
+            window = WindowConfig(window_sizes, window_sizes, :valid)
+            moments = product_moments(x_field, y_field, window; corrected=false)
+
+            factor_dict = get!(moments_by_factor, factor) do
+                Dict{Symbol, AbstractArray}()
+            end
+
+            # Convert from population variance/covariance to sum of deviations
+            samples_per_block = n_samples[factor]
+            if x_name == y_name
+                # Self-product: M2 (sum of squared deviations)
+                M2 = Array(moments.var_x .* samples_per_block)
+                factor_dict[pn] = M2
+            else
+                # Cross-product: C (sum of cross-deviations)
+                C = Array(moments.cov_xy .* samples_per_block)
+                factor_dict[pn] = C
+            end
+        end
+    end
+
+    # Convert moments to NamedTuples
+    moments_nt = Dict{Int, NamedTuple}()
+    for factor in computed_factors
+        dict = moments_by_factor[factor]
+        present_keys = filter(k -> haskey(dict, k), PN)
+        moments_nt[factor] = NamedTuple{tuple(present_keys...)}(
+            ntuple(i -> dict[present_keys[i]], length(present_keys))
+        )
+    end
+
+    return (means=means_nt, moments=moments_nt, n_samples=n_samples)
 end
 

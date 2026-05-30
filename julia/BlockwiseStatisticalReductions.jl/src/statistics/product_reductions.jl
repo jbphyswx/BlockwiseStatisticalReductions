@@ -127,8 +127,8 @@ function product_moments(x::AbstractArray{T,N}, y::AbstractArray{T,N},
                          window::WindowConfig{N}; corrected::Bool=true) where {T,N}
     size(x) == size(y) || throw(DimensionMismatch("x and y must have same shape"))
     
-    # Validate window configuration
-    validate_window_config(size(x), window; strict=true)
+    # Validate window configuration (non-strict to allow non-even divisions)
+    validate_window_config(size(x), window; strict=false)
     
     # Calculate output dimensions
     out_dims = ntuple(i -> div(size(x, i), window.sizes[i]), N)

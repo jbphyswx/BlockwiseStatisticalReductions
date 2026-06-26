@@ -1,97 +1,58 @@
 module BlockwiseStatisticalReductions
 
-using StatsBase: StatsBase
-using OnlineStats: OnlineStats
-using RollingFunctions: RollingFunctions
-using LoopVectorization: LoopVectorization
+# ─────────────────────────────────────────────────────────────────────────────
+# BlockwiseStatisticalReductions.jl
+#
+# A purpose-agnostic engine for computing statistics over N-dimensional data at many
+# coarser scales efficiently, by treating every statistic as a mergeable monoid and
+# reusing intermediate results across scales so the data is touched as few times as
+# possible. See the docs for the theory (accumulator algebra, divisor-lattice DAG,
+# sliding-window engine).
+# ─────────────────────────────────────────────────────────────────────────────
 
-# Stdlib imports (no Project.toml entry needed)
-using Serialization: Serialization
-using Statistics: Statistics
-using Distributed: Distributed
+# Execution-backend taxonomy
+include("backends.jl")
+export AbstractExecutionBackend, SerialBackend, ThreadedBackend, GPUBackend, AutoBackend
+export DistributedBackend, MPIBackend, local_backend, is_distributed, resolve_backend
 
-export WindowConfig, ReductionPlan, ReductionResult, ReductionNode, SufficientStatsNode
-export AbstractExecutionBackend, CPUBackend, DistributedBackend, GPUBackend
-export AbstractStorage, MemoryStorage, DiskStorage, PlanCache
-export rolling_views, tiled_blocks, validate_window_config
-export execute, build_plan
-export stats, rolling_window, tree_reduce
-export fork, merge_branches!, parallel_reduce
-export tiled_stats, tiled_stats_merge
+# Accumulator algebra
+include("accumulators/interface.jl")
+include("accumulators/builtin.jl")
+include("accumulators/composite.jl")
 
-# New mergeable statistics
-export MergeableStatistic, VarianceAccumulator, CovarianceAccumulator, RawMomentsAccumulator
-export merge, merge_many, merge_all
-export fit!, nobs
+# Generic block kernels (base reduction + cross-scale merge) + sliding-window engine
+include("kernels/fold.jl")
+include("kernels/block.jl")
+include("kernels/sliding.jl")
+export blockreduce!, blockreduce, coarsen!, allocate_accumulators, reduced_shape, sliding_reduce
 
-# Product coarsening
-export product_mean, product_moments, product_variance
-export JointMomentsResult
-export covariance_from_moments, variance_from_moments
-export blockwise_product_mean, blockwise_product_moments
+# Divisor lattice + optimal-DAG planner
+include("lattice.jl")
+include("planner.jl")
+export factor_shape, divides, reachable_factors
+export ReductionStep, ReductionPlan, tower_plan, solver_plan
+export plan_work, naive_work, n_base_passes, total_work
 
-# Multi-resolution planning
-export build_optimal_multires_plan, multiresolution_stats, multiresolution_products
-export build_multires_plan_groups
-
-# Tower construction
-export seed_factor_ladder, build_factor_schedule
-export build_tower_plan, build_tower_plan_from_outputs
-
-# Buffer pool
-export BufferPool, LevelBufferPool
-export acquire!, release!, with_buffer!
-export register_level!, acquire_level!, release_level!
-export create_buffer_pool_for_factors
-
-# Zero-allocation execution
-export ExecutionBuffers, allocate_buffers, execute!
-
+# Preallocated buffers + serial executor
+include("buffers.jl")
+include("execute.jl")
+export TowerBuffers, allocate_tower, step_result, run!, execute, materialize
 
 # Public API
-export blockwise_stats, blockwise_mean, blockwise_variance, blockwise_std
-export blockwise_covariance, blockwise_moments
+include("api.jl")
+export reduce_stats, MultiResResult, Tower, Sliding, factors, shapes, stat_name
 
-# Canonical in-place kernels
-export blockwise_mean!, blockwise_variance!, blockwise_mean_variance!
-export blockwise_min!, blockwise_max!, blockwise_product_mean!
-export blockwise_joint_moments!
+# Display methods (show / summary)
+include("show.jl")
 
-# Merge kernels (hierarchical sufficient-statistics composition)
-export blockwise_sum!
-export blockwise_mean_M2!, blockwise_merge_mean_M2!
-export blockwise_mean_M2_M3!, blockwise_merge_mean_M2_M3!
-export blockwise_mean_C!, blockwise_merge_covariance!
-export blockwise_merge_raw_moments!
-export variance_from_M2, std_from_M2, skewness_from_M2_M3, covariance_from_C
+export AbstractAccumulator, AbstractStatistic
+export empty_acc, lift, inverse_merge, arity, is_invertible
+export accumulation_eltype, accumulator_type, result_value, default_output_eltype, subsumes
+export check_monoid
+# Accumulator types
+export CountAcc, SumAcc, MeanAcc, VarAcc, CovAcc, MinAcc, MaxAcc, RawMomentsAcc
+export CompositeAccumulator, members
+# Statistic tags
+export Count, Sum, Mean, Var, Std, Cov, Min, Max, Moments
 
-include("types.jl")
-include("backends.jl")
-include("storage.jl")
-include("cache.jl")
-
-# Canonical blockwise kernels — loaded early so all other files can call them
-include("kernels/blockwise_kernels.jl")
-include("kernels/merge_kernels.jl")
-
-include("windows.jl")
-include("statistics/stats.jl")
-include("statistics/core.jl")
-include("statistics/parallel_merge.jl")
-include("statistics/product_reductions.jl")
-include("plan.jl")
-include("tower.jl")
-include("tower_groups.jl")
-include("execution/buffer_pool.jl")
-include("hybrid_mode.jl")
-include("public_api.jl")
-
-# Additional SIMD kernel variants
-include("kernels/simd_kernels.jl")
-
-# Distributed scheduling
-include("execution/distributed_scheduler.jl")
-
-include("execution.jl")
-
-end
+end # module

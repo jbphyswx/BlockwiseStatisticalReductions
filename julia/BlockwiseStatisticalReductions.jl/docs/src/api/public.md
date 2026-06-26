@@ -1,42 +1,98 @@
-# API Reference: Public API
+# API Reference
 
-High-level convenience functions for common blockwise operations.  These
-accept raw arrays and return results directly — no plan construction needed.
-
-## Blockwise Statistics
-
-```@docs
-blockwise_stats
-blockwise_mean
-blockwise_variance
-blockwise_std
-blockwise_covariance
-blockwise_moments
+```@meta
+CurrentModule = BlockwiseStatisticalReductions
 ```
 
-## Multi-Resolution (High-Level)
+## High-level
 
 ```@docs
-multiresolution_stats
+reduce_stats
+MultiResResult
+Tower
+Sliding
+factors
+shapes
 ```
 
-## Product Coarsening
+## Statistics
 
 ```@docs
-product_mean
-product_moments
-product_variance
-covariance_from_moments
-variance_from_moments
-blockwise_product_mean
-blockwise_product_moments
+Count
+Sum
+Mean
+Var
+Std
+Cov
+Min
+Max
+Moments
+stat_name
 ```
 
-## Hybrid Mode
+## Accumulator algebra
 
 ```@docs
-hybrid_reduction
-execute_hybrid
-HybridReductionSpec
-HybridReductionResult
+AbstractAccumulator
+AbstractStatistic
+empty_acc
+lift
+inverse_merge
+arity
+is_invertible
+accumulation_eltype
+accumulator_type
+result_value
+subsumes
+check_monoid
+CompositeAccumulator
+members
+```
+
+## Planning
+
+```@docs
+ReductionStep
+ReductionPlan
+tower_plan
+solver_plan
+reachable_factors
+factor_shape
+divides
+plan_work
+naive_work
+n_base_passes
+total_work
+```
+
+## Execution
+
+```@docs
+TowerBuffers
+allocate_tower
+run!
+execute
+step_result
+materialize
+blockreduce
+blockreduce!
+coarsen!
+sliding_reduce
+allocate_accumulators
+reduced_shape
+```
+
+## Backends
+
+```@docs
+AbstractExecutionBackend
+SerialBackend
+ThreadedBackend
+GPUBackend
+DistributedBackend
+MPIBackend
+AutoBackend
+local_backend
+is_distributed
+resolve_backend
 ```

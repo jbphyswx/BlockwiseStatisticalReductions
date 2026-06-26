@@ -3,46 +3,28 @@ uuid = "8f3a3c1b-9f5c-4b2a-9e3d-5f3c8a9e5b2c"
 version = "0.1.0"
 authors = ["Jordan Benjamin"]
 
-[workspace]
-projects = ["test", "docs", "benchmarks"]
-
 [deps]
-Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
-LoopVectorization = "bdcacae8-1622-11e9-2a5c-532679323890"
-OnlineStats = "a15396b6-48d5-5d58-9928-6d29437db91e"
-RollingFunctions = "b0e4dd01-7b14-53d8-9b45-175a3e362653"
-Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
-SharedArrays = "1a1011a3-84de-559e-8e89-a11a2f7dc383"
-Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
-StatsBase = "2913bbd2-ae8a-5f71-8c99-4fb6c76f3a91"
 
 [weakdeps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
-JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
-OhMyThreads = "67456a42-6c7c-42c9-9c44-85af33b8d7a5"
+Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+OhMyThreads = "67456a42-1dca-4109-a031-0a68de7e3ad5"
+SharedArrays = "1a1011a3-84de-559e-8e89-a11a2f7dc383"
 
 [extensions]
-CUDAExt = "CUDA"
-JLD2Ext = "JLD2"
-OhMyThreadsExt = "OhMyThreads"
+BlockwiseStatisticalReductionsCUDAExt = ["KernelAbstractions", "CUDA"]
+BlockwiseStatisticalReductionsDistributedExt = ["Distributed", "SharedArrays"]
+BlockwiseStatisticalReductionsKernelAbstractionsExt = "KernelAbstractions"
+BlockwiseStatisticalReductionsOhMyThreadsExt = "OhMyThreads"
 
 [compat]
-julia = "1.10"
-CUDA = "5"
-Distributed = "1.11.0"
-JLD2 = "0.5"
-LoopVectorization = "0.12.171"
-OhMyThreads = "0.7"
-OnlineStats = "1.7.3"
-RollingFunctions = "0.8.1"
-Serialization = "1.11.0"
-SharedArrays = "1.11.0"
-Statistics = "1.11.1"
-StatsBase = "0.34.10"
-Test = "1.11"
+CUDA = "5, 6"
+Distributed = "1"
+KernelAbstractions = "0.9"
+OhMyThreads = "0.7, 0.8"
+SharedArrays = "1"
+julia = "1.11"
 
-[extras]
-Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-
-[targets]
-test = ["Test"]
+[workspace]
+projects = ["test", "benchmark", "docs", "examples"]

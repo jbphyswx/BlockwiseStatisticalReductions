@@ -1,86 +1,45 @@
-using Random: Random
+using BlockwiseStatisticalReductions
+using Test, Random, Statistics
 
-"""
-    make_test_array(shape::Tuple; T=Float64, seed=1234)
+const BSR = BlockwiseStatisticalReductions
 
-Create a test array with reproducible random values.
-"""
-function make_test_array(shape::Tuple; T=Float64, seed=1234)
-    rng = Random.MersenneTwister(seed)
-    return rand(rng, T, shape...)
+# Brute-force non-overlapping block reduction of `f` over `data` (reference for correctness tests).
+function brute(f, data::AbstractArray{T,N}, window::NTuple{N,Int}) where {T,N}
+    osh = ntuple(i -> size(data, i) ÷ window[i], N)
+    out = Array{Float64,N}(undef, osh)
+    for I in CartesianIndices(out)
+        lo = ntuple(i -> (I[i] - 1) * window[i] + 1, N)
+        hi = ntuple(i -> I[i] * window[i], N)
+        out[I] = f(vec(collect(@view data[ntuple(i -> lo[i]:hi[i], N)...])))
+    end
+    return out
 end
 
-"""
-    make_test_array_gpu(shape::Tuple; T=Float64, seed=1234)
-
-Create a GPU test array (requires CUDA extension to be loaded).
-"""
-function make_test_array_gpu(shape::Tuple; T=Float64, seed=1234)
-    if isdefined(BlockwiseStatisticalReductions, :CuArray)
-        arr = make_test_array(shape; T=T, seed=seed)
-        return BlockwiseStatisticalReductions.CuArray(arr)
-    else
-        error("CUDA not available")
+# Brute-force block covariance of `x,y`.
+function brute_cov(x::AbstractArray{T,N}, y::AbstractArray{T,N}, window::NTuple{N,Int}; corrected=true) where {T,N}
+    osh = ntuple(i -> size(x, i) ÷ window[i], N)
+    out = Array{Float64,N}(undef, osh)
+    for I in CartesianIndices(out)
+        lo = ntuple(i -> (I[i] - 1) * window[i] + 1, N)
+        hi = ntuple(i -> I[i] * window[i], N)
+        rng = ntuple(i -> lo[i]:hi[i], N)
+        out[I] = cov(vec(collect(@view x[rng...])), vec(collect(@view y[rng...])); corrected = corrected)
     end
+    return out
 end
 
-"""
-    @test_backend_consistency expr
+# Finalize an array of accumulators into a statistic (single-accumulator arrays).
+vals(stat, accs, ::Type{Tout}) where {Tout} = map(a -> result_value(stat, a, Tout), accs)
 
-Test that an expression produces consistent results across backends.
-"""
-macro test_backend_consistency(expr)
-    quote
-        # CPU backend
-        cpu_result = $(esc(expr))
-        
-        # OhMyThreads backend (if available)
-        omt_result = nothing
-        @static if isdefined(BlockwiseStatisticalReductions, :OhMyThreadsBackend)
-            omt_result = $(esc(expr))
-        end
-        
-        # GPU backend (if CUDA available)
-        gpu_result = nothing
-        @static if isdefined(BlockwiseStatisticalReductions, :CuArray)
-            gpu_result = $(esc(expr))
-        end
-        
-        # Compare results
-        if omt_result !== nothing
-            @test isapprox(cpu_result, omt_result; rtol=1e-10)
-        end
-        
-        if gpu_result !== nothing
-            @test isapprox(cpu_result, gpu_result; rtol=1e-6)
-        end
-        
-        cpu_result
+# Brute-force overlapping (sliding) window reduction of `f` over `data`.
+function brute_sliding(f, data::AbstractArray{T,N}, w::NTuple{N,Int}, s::NTuple{N,Int}, o::NTuple{N,Int}) where {T,N}
+    md = ntuple(d -> size(data, d) - w[d] + 1, N)
+    osz = ntuple(d -> (md[d] - o[d]) ÷ s[d] + 1, N)
+    out = Array{Float64,N}(undef, osz)
+    for I in CartesianIndices(out)
+        p = ntuple(d -> o[d] + (I[d] - 1) * s[d], N)
+        rng = ntuple(d -> p[d]:p[d] + w[d] - 1, N)
+        out[I] = f(vec(collect(@view data[rng...])))
     end
-end
-
-"""
-    benchmark_window_iteration(arr, config; n=10)
-
-Benchmark window iteration performance.
-"""
-function benchmark_window_iteration(arr, config; n=10)
-    times = Float64[]
-    
-    for _ in 1:n
-        gc_state = gc_enable(false)
-        t0 = time_ns()
-        
-        count = 0
-        for (view, meta) in rolling_views(arr, config)
-            count += 1
-        end
-        
-        t1 = time_ns()
-        gc_enable(gc_state)
-        
-        push!(times, (t1 - t0) / 1e9)
-    end
-    
-    return (mean=mean(times), std=std(times), min=minimum(times), max=maximum(times), n_windows=count)
+    return out
 end

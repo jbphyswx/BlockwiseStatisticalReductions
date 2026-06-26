@@ -1,102 +1,92 @@
 # Getting Started
 
-## Installation
-
-BlockwiseStatisticalReductions.jl is not yet registered.  Install from the
-repository:
-
-```julia
-using Pkg
-Pkg.add(url="https://github.com/jbphyswx/BlockwiseStatisticalReductions.jl")
-```
-
-Or in development mode:
-
-```julia
-Pkg.develop(path="/path/to/BlockwiseStatisticalReductions.jl")
-```
-
-## Your first reduction
-
 ```julia
 using BlockwiseStatisticalReductions
-
-# Create some 3D data (e.g., 128×128 horizontal, 8 vertical levels)
-data = randn(Float32, 128, 128, 8)
-
-# Compute the mean over 4×4×1 blocks (coarsen x,y by 4, keep z intact)
-means = blockwise_mean(data, (4, 4, 1))
-# Result: 32×32×8 array
 ```
 
-The block size `(4, 4, 1)` means: take 4×4×1 non-overlapping tiles and compute
-the mean of each tile.  The output shape is `input_shape .÷ block_size`.
-
-## Understanding output shapes
-
-The fundamental invariant:
-
-```
-output_size[d] = input_size[d] ÷ block_size[d]
-```
-
-This requires `block_size[d]` to evenly divide `input_size[d]` for every
-dimension `d`.  If it doesn't divide evenly, the excess elements at the
-boundary are dropped (`:valid` padding mode).
-
-| Input shape | Block size | Output shape |
-|---|---|---|
-| `(128, 128, 8)` | `(4, 4, 1)` | `(32, 32, 8)` |
-| `(128, 128, 8)` | `(4, 4, 8)` | `(32, 32, 1)` |
-| `(6000, 6000, 64)` | `(100, 100, 4)` | `(60, 60, 16)` |
-
-## Multiple statistics in one pass
-
-When you need both mean and variance, computing them together is faster than
-two separate passes because the fused kernel reads data only once:
+## One field, several statistics, several scales
 
 ```julia
-results = blockwise_stats(data, (4, 4, 1); stats=[:mean, :variance])
-results[:mean]      # 32×32×8
-results[:variance]  # 32×32×8
+data = randn(256, 256)
+r = reduce_stats(data, [4, 8, 16]; stats = (Mean(), Var(), Min(), Max()))
+
+factors(r)          # [(4,4), (8,8), (16,16)]  — finest first
+r[(8, 8)].mean      # array of means at 8× coarsening
+r((8, 8), Var())    # the variance array (callable accessor)
 ```
 
-Available statistics: `:mean`, `:variance`, `:std`, `:min`, `:max`.
+Requesting `Mean` and `Var` together costs no more than `Var` alone: both are read from a single
+variance accumulator. `Count`, `Sum` and `Mean` are likewise free alongside `Var`.
 
-## Multi-resolution in one DAG
-
-If you need statistics at multiple scales (e.g., 2× and 4× and 8×
-coarsening), building a plan is far more efficient than running three
-independent reductions because the 4× result reuses the 2× intermediate:
+## Choosing scales
 
 ```julia
-plan = build_optimal_multires_plan(size(data), [2, 4, 8], [:mean])
-results = execute(plan, data)
+reduce_stats(data, 8; stats = (Mean(),))                  # a single scale
+reduce_stats(data, [4, 8, 16]; stats = (Mean(),))         # isotropic block sizes
+reduce_stats(data, [(4, 4), (8, 2)]; stats = (Mean(),))   # per-dimension (anisotropic)
 
-# results is a Vector{ReductionResult}
-# results[1].data → 64×64×4  (2× coarsened in all dims except last*)
-# results[2].data → 32×32×2  (4×)
-# results[3].data → 16×16×1  (8×)
+# leave a dimension unreduced with factor 1
+reduce_stats(randn(64, 64, 10), [(8, 8, 1)]; stats = (Mean(),))
+
+# a full tower: finest block, per-level multipliers, coarsest block
+reduce_stats(data, Tower(base_factor = 2, steps = [2, 3], maxfactor = 64); stats = (Mean(), Std()))
 ```
 
-!!! note
-    By default, `build_optimal_multires_plan` reduces all dimensions except the
-    last.  Pass `dims=(1, 2)` to only reduce specific dimensions.
-
-## Controlling which dimensions are reduced
-
-The `dims` keyword specifies which dimensions participate in the reduction:
+## Covariance (two fields)
 
 ```julia
-# Only reduce x and y (dims 1 and 2), leave z (dim 3) intact
-plan = build_optimal_multires_plan((128, 128, 8), [2, 4], [:mean]; dims=(1, 2))
-results = execute(plan, data)
-# results[1].data → 64×64×8  (z preserved)
+x = randn(128, 128); y = randn(128, 128)
+rc = reduce_stats(x, y, [8, 16]; stats = (Cov(),))
+rc[(8, 8)].cov
 ```
 
-## What to read next
+## Overlapping (sliding) windows
 
-- **[Window Configurations](concepts/windows.md)** — understand sizes, strides, and padding
-- **[Multi-Resolution Towers](concepts/tower.md)** — the BFS lattice and DAG construction
-- **[Basic Reductions](howto/basic_reductions.md)** — detailed recipes
-- **[Per-Dimension Scaling](howto/per_dimension.md)** — different factors per dimension
+```julia
+# 16×16 windows every 4 cells
+rs = reduce_stats(data, [Sliding((16, 16); stride = (4, 4))]; stats = (Mean(), Var()))
+rs[(16, 16)].var
+```
+
+With `stride == window` (the default) a `Sliding` reduction is exactly the non-overlapping blockwise
+reduction.
+
+## Backends
+
+```julia
+using OhMyThreads                              # enables ThreadedBackend
+reduce_stats(data, [4, 8]; stats = (Var(),), backend = ThreadedBackend())
+
+using Distributed, SharedArrays                # enables DistributedBackend
+reduce_stats(data, [4, 8]; stats = (Var(),), backend = DistributedBackend())
+```
+
+## Zero-allocation repeated execution
+
+```julia
+plan = tower_plan(size(data); base_factor = (2, 2), steps = ([2], [2]), maxfactor = (64, 64))
+buf  = allocate_tower(plan, VarAcc{Float64})
+run!(buf, plan, data)                          # 0 bytes at steady state
+materialize(step_result(buf, plan.output_steps[end]), Var(), Float64)
+```
+
+## A custom statistic
+
+```julia
+import BlockwiseStatisticalReductions as BSR
+struct GeoMeanAcc{T} <: BSR.AbstractAccumulator
+    n::Int
+    logsum::T
+end
+BSR.empty_acc(::Type{GeoMeanAcc{T}}) where {T} = GeoMeanAcc(0, zero(T))
+BSR.lift(::Type{GeoMeanAcc{T}}, x) where {T} = GeoMeanAcc(1, log(T(x)))
+Base.merge(a::GeoMeanAcc, b::GeoMeanAcc) = GeoMeanAcc(a.n + b.n, a.logsum + b.logsum)
+struct GeoMean <: BSR.AbstractStatistic end
+BSR.accumulator_type(::GeoMean, ::Type{T}) where {T} = GeoMeanAcc{BSR.accumulation_eltype(T)}
+BSR.result_value(::GeoMean, a::GeoMeanAcc{T}, ::Type{O}) where {T,O} = O(exp(a.logsum / a.n))
+BSR.stat_name(::GeoMean) = :geomean
+
+reduce_stats(abs.(data) .+ 1, [4, 8]; stats = (GeoMean(),))
+```
+
+`check_monoid(GeoMeanAcc{Float64})` checks the monoid laws on random data.

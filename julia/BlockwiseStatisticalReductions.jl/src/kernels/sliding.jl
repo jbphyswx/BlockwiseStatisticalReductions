@@ -88,6 +88,12 @@ blockwise reduction.
 """
 function sliding_reduce(::Type{Acc}, inputs::Tuple, window::NTuple{N,Int}, stride::NTuple{N,Int};
                         origin::NTuple{N,Int} = ntuple(_ -> 1, Val(N))) where {Acc,N}
+    # Non-overlapping origin-1 windows ARE a blockwise reduction: take the fast blockwise path (its
+    # specialized bulk kernels) instead of a full dense SWAG pass followed by discarding all but every
+    # `window`-th position.
+    if stride == window && all(isone, origin)
+        return blockreduce(Acc, inputs, window)
+    end
     dense = sliding_dense(Acc, inputs, window)
     md = size(dense)
     for d in 1:N

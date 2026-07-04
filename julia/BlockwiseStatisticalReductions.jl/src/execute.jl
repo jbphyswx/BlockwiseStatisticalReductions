@@ -58,14 +58,24 @@ materialize(accs::AbstractArray, stat::AbstractStatistic, ::Type{Tout}) where {T
     map(a -> result_value(stat, a, Tout), accs)
 
 """
-    materialize(accs::AbstractArray{<:CompositeAccumulator}, member::Integer, stat, ::Type{Tout})
+    materialize(accs::AbstractArray{<:CompositeAccumulator}, member, stat, ::Type{Tout})
 
-Finalize statistic `stat` from member `member` of an array of composite accumulators.
+Finalize statistic `stat` from member `member` of an array of composite accumulators. Prefer the
+`Val{M}` form (used on the hot path): with a compile-time member index, extracting `members(a)[M]`
+from the (possibly heterogeneous) member tuple is type-stable, avoiding a boxed-union + dynamic
+dispatch per output cell for mixed non-subsuming stat sets (e.g. `(Mean, Min, Max)`). The `Integer`
+form is a convenience that may be type-unstable for heterogeneous composites.
 """
+materialize(accs::AbstractArray{<:CompositeAccumulator}, ::Val{M},
+            stat::AbstractStatistic, ::Type{Tout}) where {M,Tout} =
+    map(a -> result_value(stat, getfield(members(a), M), Tout), accs)
 materialize(accs::AbstractArray{<:CompositeAccumulator}, member::Integer,
             stat::AbstractStatistic, ::Type{Tout}) where {Tout} =
     map(a -> result_value(stat, members(a)[member], Tout), accs)
 
-# Worker-side helper for the Distributed extension: compute one base node on a data slab. Defined in
-# core so it is available on every process that has loaded the package (no @everywhere needed).
-_compute_base_slab(::Type{Acc}, inputs::Tuple, window::NTuple) where {Acc} = blockreduce(Acc, inputs, window)
+# Worker-side helper for the Distributed extension: compute one base node on a data slab with the
+# given local backend (so `DistributedBackend{ThreadedBackend}` etc. actually thread on each worker).
+# Defined in core so it is available on every process that has loaded the package (no @everywhere).
+_compute_base_slab(::Type{Acc}, inputs::Tuple, window::NTuple,
+                   backend::AbstractExecutionBackend = SerialBackend()) where {Acc} =
+    blockreduce!(allocate_accumulators(Acc, reduced_shape(size(inputs[1]), window)), inputs, window, backend)

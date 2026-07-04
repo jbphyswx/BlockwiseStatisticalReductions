@@ -1,0 +1,33 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  test:
+    name: Julia ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['1.11', '1.12']
+    env:
+      JULIA_NUM_THREADS: '2'   # exercise the threaded backend (serial==threaded parity)
+    defaults:
+      run:
+        working-directory: julia/BlockwiseStatisticalReductions.jl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.version }}
+      - uses: julia-actions/cache@v2
+      # Runs the full suite: correctness, type-stability, zero-alloc, and backend parity
+      # (threaded via JULIA_NUM_THREADS, GPU via the KernelAbstractions CPU backend, MPI via mpiexec).
+      - name: Test
+        run: julia --project=. --color=yes -e 'using Pkg; Pkg.test()'

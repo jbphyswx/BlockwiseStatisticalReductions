@@ -23,8 +23,10 @@ include("accumulators/composite.jl")
 # Generic block kernels (base reduction + cross-scale merge) + sliding-window engine
 include("kernels/fold.jl")
 include("kernels/block.jl")
+include("kernels/bulk.jl")
 include("kernels/sliding.jl")
 export blockreduce!, blockreduce, coarsen!, allocate_accumulators, reduced_shape, sliding_reduce
+export reduce_block, coarsen_block
 
 # Divisor lattice + optimal-DAG planner
 include("lattice.jl")
@@ -42,8 +44,20 @@ export TowerBuffers, allocate_tower, step_result, run!, execute, materialize
 include("api.jl")
 export reduce_stats, MultiResResult, Tower, Sliding, factors, shapes, stat_name
 
+# Gap-filling multi-scale schedules (resolve to target factors → solver_plan)
+include("schedule.jl")
+export scale_ladder, Ladder
+
+# Prepared reductions (reuse plan + buffers + result arrays across calls; allocation-free hot loop)
+include("prepared.jl")
+export PreparedReduction, prepare, reduce_stats!, materialize!
+
 # Display methods (show / summary)
 include("show.jl")
+
+# Visualization: Graphviz DOT of the reduction DAG (dependency-free)
+include("viz.jl")
+export plan_dot
 
 export AbstractAccumulator, AbstractStatistic
 export empty_acc, lift, inverse_merge, arity, is_invertible

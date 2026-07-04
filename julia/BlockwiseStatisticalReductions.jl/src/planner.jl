@@ -89,7 +89,9 @@ function _augment_steiner(X::NTuple{N,Int}, targets::Vector{NTuple{N,Int}}; cap:
         best = nothing
         bestcost = current
         for m in candidates
-            c = total_work(X, vcat(M, m))
+            push!(M, m)                      # trial-add `m` (reuse `M` as scratch; no vcat alloc)
+            c = total_work(X, M)
+            pop!(M)
             if c < bestcost
                 bestcost = c
                 best = m

@@ -20,6 +20,13 @@ function Base.show(io::IO, s::Sliding)
     s.origin == 1 || print(io, ", origin=", s.origin)
     print(io, ")")
 end
+function Base.show(io::IO, l::Ladder)
+    print(io, "Ladder(seeds=", l.seeds, ", steps=", l.steps, ", minfactor=", l.minfactor,
+          ", maxfactor=", l.maxfactor)
+    l.include_full && print(io, ", include_full=true")
+    l.combine === :isotropic || print(io, ", combine=:", l.combine)
+    print(io, ")")
+end
 
 # ── TowerBuffers ──────────────────────────────────────────────────────────────
 Base.show(io::IO, b::TowerBuffers{Acc,N}) where {Acc,N} =
@@ -60,8 +67,8 @@ function Base.show(io::IO, ::MIME"text/plain", r::MultiResResult{N,NT}) where {N
     println(io, "MultiResResult over input ", r.input_shape, ":")
     println(io, "  statistics: ", join(_nt_names(NT), ", "))
     println(io, "  ", length(r.order), " resolution(s) (factor → shape):")
-    for f in r.order
-        println(io, "    ", f, " → ", r.shapes[f])
+    for (f, sh) in zip(r.order, r.shapes)
+        println(io, "    ", f, " → ", sh)
     end
     print(io, "  index by factor, e.g. r[", first(r.order), "].", first(_nt_names(NT)))
 end

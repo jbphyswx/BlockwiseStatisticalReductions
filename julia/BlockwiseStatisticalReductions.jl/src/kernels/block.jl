@@ -8,7 +8,7 @@
 #   coarsen!(out, fine, window)        — merge step: combine already-computed accumulators
 #
 # Both write into a preallocated `Array{Acc}` (one method each, generic over `Acc`), use the
-# pairwise `treefold`, and allocate nothing beyond `out`. There is no `is_base` branch: the base
+# sequential `blockfold`, and allocate nothing beyond `out`. There is no `is_base` branch: the base
 # pass dispatches on a data array, the merge on an accumulator array. With non-overlapping blocks
 # and low-index truncation, the high-index remainder is simply not covered (size `out`
 # accordingly); no padding.
@@ -36,18 +36,31 @@ accumulator array `out`. `inputs` is one array (arity-1 statistics) or a 2-tuple
 function blockreduce!(out::AbstractArray{Acc,N}, inputs::Tuple, window::NTuple{N,Int},
                       backend::AbstractExecutionBackend = SerialBackend()) where {Acc,N}
     @boundscheck _check_block_inputs(out, inputs, window)
-    leaf = J -> _leaf(Acc, inputs, J)
-    _drive_base!(out, leaf, window, backend)
+    _drive_base!(out, inputs, window, backend)
     return out
 end
 blockreduce!(out::AbstractArray, data::AbstractArray, window::NTuple,
              backend::AbstractExecutionBackend = SerialBackend()) =
     blockreduce!(out, (data,), window, backend)
 
-# Serial cell driver; other backends (e.g. ThreadedBackend) add methods in their extensions.
-function _drive_base!(out::AbstractArray{Acc,N}, leaf::F, window::NTuple{N,Int}, ::SerialBackend) where {Acc,N,F}
+"""
+    reduce_block(::Type{Acc}, inputs::Tuple, lo::CartesianIndex, hi::CartesianIndex) -> Acc
+
+Reduce the raw-data block `[lo, hi]` (over `inputs`) into one accumulator of type `Acc`. This is a
+public, overridable hook: the default is the generic sequential [`blockfold`], but a statistic may
+specialize it on `Acc` to reduce a whole block by any means (SIMD `sum`, two-pass, BLAS, …). The
+whole-*array* bulk path (`_drive_base!` specialized on `Acc`) is the reshape-style fast route BSR uses
+for its built-ins; `reduce_block` is the per-cell route also used under threading.
+"""
+@inline reduce_block(::Type{Acc}, inputs::Tuple, lo::CartesianIndex{N}, hi::CartesianIndex{N}) where {Acc,N} =
+    blockfold(J -> _leaf(Acc, inputs, J), lo, hi)
+
+# Serial cell driver: fill every output cell via the per-cell `reduce_block` hook. Other backends
+# (Threaded) add `_drive_base!` methods in their extensions; a statistic may add a whole-array bulk
+# `_drive_base!` specialized on its `Acc` (see kernels/bulk.jl for BSR's built-in bulk kernels).
+function _drive_base!(out::AbstractArray{Acc,N}, inputs::Tuple, window::NTuple{N,Int}, ::SerialBackend) where {Acc,N}
     @inbounds for I in CartesianIndices(out)
-        out[I] = treefold(leaf, _block_lo(I, window), _block_hi(I, window))
+        out[I] = reduce_block(Acc, inputs, _block_lo(I, window), _block_hi(I, window))
     end
     return nothing
 end
@@ -63,14 +76,24 @@ the coarse scale (exact hierarchical reuse). `out` must be sized `size(fine) .÷
 function coarsen!(out::AbstractArray{Acc,N}, fine::AbstractArray{Acc,N}, window::NTuple{N,Int},
                   backend::AbstractExecutionBackend = SerialBackend()) where {Acc,N}
     @boundscheck _check_coarsen_inputs(out, fine, window)
-    leaf = J -> @inbounds fine[J]
-    _drive_merge!(out, leaf, window, backend)
+    _drive_merge!(out, fine, window, backend)
     return out
 end
 
-function _drive_merge!(out::AbstractArray{Acc,N}, leaf::F, window::NTuple{N,Int}, ::SerialBackend) where {Acc,N,F}
+"""
+    coarsen_block(fine::AbstractArray{Acc}, lo::CartesianIndex, hi::CartesianIndex) -> Acc
+
+Combine the already-computed finer accumulators in the block `[lo, hi]` of `fine` into one coarser
+accumulator. Public, overridable hook (the coarsen-side twin of [`reduce_block`]); default is the
+generic sequential [`blockfold`] over `fine`. A statistic may specialize it (or the whole-array
+`_drive_merge!`) to combine a whole block by vectorized reductions over the accumulators' fields.
+"""
+@inline coarsen_block(fine::AbstractArray{Acc,N}, lo::CartesianIndex{N}, hi::CartesianIndex{N}) where {Acc,N} =
+    blockfold(J -> (@inbounds fine[J]), lo, hi)
+
+function _drive_merge!(out::AbstractArray{Acc,N}, fine::AbstractArray{Acc,N}, window::NTuple{N,Int}, ::SerialBackend) where {Acc,N}
     @inbounds for I in CartesianIndices(out)
-        out[I] = treefold(leaf, _block_lo(I, window), _block_hi(I, window))
+        out[I] = coarsen_block(fine, _block_lo(I, window), _block_hi(I, window))
     end
     return nothing
 end

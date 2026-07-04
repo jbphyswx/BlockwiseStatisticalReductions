@@ -13,7 +13,6 @@ Each worker runs the package's `inner` local backend.
 """
 
 using Distributed: Distributed, workers, nworkers, remotecall_fetch
-using SharedArrays: SharedArrays
 using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions as BSR
 
 # Split 1:n into up to `k` contiguous, near-equal ranges.
@@ -30,8 +29,10 @@ function _chunk_ranges(n::Int, k::Int)
     return ranges
 end
 
-# Distribute one base node over disjoint output-cell slabs along the largest output dimension.
-function _distributed_base!(out::Array{Acc,N}, inputs::Tuple, window::NTuple{N,Int}) where {Acc,N}
+# Distribute one base node over disjoint output-cell slabs along the largest output dimension. Each
+# worker runs the given `inner` local backend (serial/threaded/GPU) on its slab.
+function _distributed_base!(out::Array{Acc,N}, inputs::Tuple, window::NTuple{N,Int},
+                            inner::BSR.AbstractExecutionBackend) where {Acc,N}
     sd = argmax(size(out))
     wkrs = workers()
     ranges = _chunk_ranges(size(out, sd), length(wkrs))
@@ -42,7 +43,7 @@ function _distributed_base!(out::Array{Acc,N}, inputs::Tuple, window::NTuple{N,I
         dlo = (first(rng) - 1) * window[sd] + 1
         dhi = last(rng) * window[sd]
         islab = map(a -> copy(selectdim(a, sd, dlo:dhi)), inputs)
-        @async slabs[k] = remotecall_fetch(BSR._compute_base_slab, w, Acc, islab, window)
+        @async slabs[k] = remotecall_fetch(BSR._compute_base_slab, w, Acc, islab, window, inner)
     end
     for k in eachindex(ranges)
         copyto!(selectdim(out, sd, ranges[k]), slabs[k])
@@ -61,7 +62,7 @@ function BSR.run!(buf::BSR.TowerBuffers{Acc,N}, plan::BSR.ReductionPlan{N}, inpu
         out = buf.arrays[i]
         if s.source == 0
             if can_distribute && maximum(size(out)) >= 2
-                _distributed_base!(out, inputs, s.window)
+                _distributed_base!(out, inputs, s.window, inner)
             else
                 BSR.blockreduce!(out, inputs, s.window, inner)
             end

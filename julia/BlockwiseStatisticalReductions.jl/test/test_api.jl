@@ -49,7 +49,35 @@ Random.seed!(6)
         r2 = reduce_stats(randn(60, 60), [10]; stats = (Count(), Sum(), Mean(), Var()))
         @test eltype(r2[(10, 10)].count) === Int && all(r2[(10, 10)].count .== 100)
         C, routing, _, _ = BSR._assemble((Count(), Sum(), Mean(), Var()), Float64)
-        @test C === CompositeAccumulator{Tuple{VarAcc{Float64}}} && all(==(1), routing)
+        # routing encodes the member index in the type (`Val`) for type-stable per-cell finalize
+        @test C === CompositeAccumulator{Tuple{VarAcc{Float64}}} && all(r -> r === Val(1), routing)
+    end
+
+    @testset "mixed non-subsuming finalize is type-stable (no per-cell boxing)" begin
+        data = randn(64, 64)
+        r = reduce_stats(data, [8]; stats = (Mean(), Min(), Max()))
+        @test keys(r[(8, 8)]) == (:mean, :min, :max)
+        # Build the heterogeneous composite (members MeanAcc, MinAcc, MaxAcc) and check that
+        # Val-indexed member extraction infers to a concrete Array (the audit-#4 regression guard).
+        plan = BSR._plan_for((64, 64), [8])
+        C, _, _, _ = BSR._assemble((Mean(), Min(), Max()), Float64)
+        @test C === CompositeAccumulator{Tuple{MeanAcc{Float64},MinAcc{Float64},MaxAcc{Float64}}}
+        buf = BSR.allocate_tower(plan, C)
+        BSR.run!(buf, plan, (data,))
+        accs = BSR.step_result(buf, plan.output_steps[1])
+        @test (@inferred BSR.materialize(accs, Val(1), Mean(), Float64)) isa Array{Float64}
+        @test (@inferred BSR.materialize(accs, Val(2), Min(), Float64)) isa Array{Float64}
+        @test (@inferred BSR.materialize(accs, Val(3), Max(), Float64)) isa Array{Float64}
+    end
+
+    @testset "plan_dot (DAG visualization)" begin
+        plan = solver_plan((120, 96), [(4, 4), (8, 8), (12, 12)])
+        d = plan_dot(plan)
+        @test occursin("digraph", d)
+        @test occursin("input (120, 96)", d)
+        @test occursin("->", d)                              # has edges
+        @test occursin("(8, 8)", d) && occursin("(12, 12)", d)   # factors labeled
+        @test count("->", d) == length(plan.steps)           # one incoming edge per node
     end
 
     @testset "arity mismatch errors" begin

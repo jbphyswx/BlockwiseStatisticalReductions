@@ -41,21 +41,30 @@ r((4,4), Mean())    # the mean array at factor (4,4)
 factors(r)          # the output factors, finest first
 ```
 """
-struct MultiResResult{N,NT}
+struct MultiResResult{N,NT,OV,SV,RV}
     input_shape::NTuple{N,Int}
-    results::Dict{NTuple{N,Int},NT}
-    order::Vector{NTuple{N,Int}}              # output factors, in finest-first order
-    shapes::Dict{NTuple{N,Int},NTuple{N,Int}}
+    order::OV                                 # output factors, finest-first (any AbstractVector)
+    shapes::SV                                # output shapes, aligned with `order`
+    results::RV                               # per-factor NamedTuples, aligned with `order`
 end
 
-Base.getindex(r::MultiResResult{N}, factor::NTuple{N,Int}) where {N} = r.results[factor]
-(r::MultiResResult)(factor::NTuple, stat::AbstractStatistic) = getproperty(r.results[factor], stat_name(stat))
+# Construct with container types inferred from the arguments (NT = the result NamedTuple type).
+MultiResResult(input_shape::NTuple{N,Int}, order, shapes, results) where {N} =
+    MultiResResult{N,eltype(results),typeof(order),typeof(shapes),typeof(results)}(input_shape, order, shapes, results)
+
+@inline function _factor_index(r::MultiResResult{N}, factor::NTuple{N,Int}) where {N}
+    i = findfirst(isequal(factor), r.order)
+    i === nothing && throw(KeyError(factor))
+    return i
+end
+Base.getindex(r::MultiResResult{N}, factor::NTuple{N,Int}) where {N} = r.results[_factor_index(r, factor)]
+(r::MultiResResult)(factor::NTuple, stat::AbstractStatistic) = getproperty(r[factor], stat_name(stat))
 "Output factors (block sizes) present in the result, finest first."
 factors(r::MultiResResult) = r.order
 "Output shapes present in the result, finest first."
-shapes(r::MultiResResult) = [r.shapes[f] for f in r.order]
+shapes(r::MultiResResult) = r.shapes
 Base.keys(r::MultiResResult) = r.order
-Base.haskey(r::MultiResResult{N}, f::NTuple{N,Int}) where {N} = haskey(r.results, f)
+Base.haskey(r::MultiResResult{N}, f::NTuple{N,Int}) where {N} = f in r.order
 Base.length(r::MultiResResult) = length(r.order)
 
 # ── Scale specifications ──────────────────────────────────────────────────────
@@ -116,9 +125,13 @@ function _assemble(stats::Tuple, ::Type{Tin}) where {Tin}
     C = CompositeAccumulator{Tuple{members_kept...}}
     routing = ntuple(k -> member_for(stats[k], members_kept, Tin), length(stats))
     any(==(0), routing) && error("internal: a statistic could not be routed to a composite member")
+    # Encode each member index in the type (`Val`) so per-cell finalize is type-stable even for a
+    # heterogeneous (mixed non-subsuming) member tuple. This build-time `Val` construction is a single
+    # dynamic step per call, behind the `_execute_finalize` function barrier — not per output cell.
+    routing_val = map(Val, routing)
     names = map(stat_name, stats)
     touts = map(s -> default_output_eltype(s, Tin), stats)
-    return C, routing, names, touts
+    return C, routing_val, names, touts
 end
 
 # Finalize one output node's accumulators into a NamedTuple of result arrays.
@@ -134,16 +147,15 @@ function _execute_finalize(::Type{C}, plan::ReductionPlan{N}, inputs::Tuple,
     buf = allocate_tower(plan, C)
     run!(buf, plan, inputs, backend)
     NT = typeof(_finalize_node(step_result(buf, plan.output_steps[1]), stats, routing, names, touts))
-    results = Dict{NTuple{N,Int},NT}()
-    shapes = Dict{NTuple{N,Int},NTuple{N,Int}}()
     order = NTuple{N,Int}[]
+    shapes = NTuple{N,Int}[]
+    results = NT[]
     for i in plan.output_steps
-        f = plan.steps[i].factor
-        results[f] = _finalize_node(step_result(buf, i), stats, routing, names, touts)
-        shapes[f] = plan.steps[i].shape
-        push!(order, f)
+        push!(order, plan.steps[i].factor)
+        push!(shapes, plan.steps[i].shape)
+        push!(results, _finalize_node(step_result(buf, i), stats, routing, names, touts))
     end
-    return MultiResResult{N,NT}(plan.input_shape, results, order, shapes)
+    return MultiResResult(plan.input_shape, order, shapes, results)
 end
 
 # ── reduce_stats ──────────────────────────────────────────────────────────────
@@ -214,17 +226,17 @@ function _sliding_finalize(::Type{C}, inputs::Tuple, X::NTuple{N,Int}, slidings:
     accs1 = sliding_reduce(C, inputs, w1, s1; origin = o1)
     nt1 = _finalize_node(accs1, stats, routing, names, touts)
     NT = typeof(nt1)
-    results = Dict{NTuple{N,Int},NT}(w1 => nt1)
-    shapes = Dict{NTuple{N,Int},NTuple{N,Int}}(w1 => size(accs1))
     order = NTuple{N,Int}[w1]
+    shapes = NTuple{N,Int}[size(accs1)]
+    results = NT[nt1]
     for k in 2:length(slidings)
         w, s, o = _resolve_sliding(slidings[k], Val(N))
         accs = sliding_reduce(C, inputs, w, s; origin = o)
-        results[w] = _finalize_node(accs, stats, routing, names, touts)
-        shapes[w] = size(accs)
         push!(order, w)
+        push!(shapes, size(accs))
+        push!(results, _finalize_node(accs, stats, routing, names, touts))
     end
-    return MultiResResult{N,NT}(X, results, order, shapes)
+    return MultiResResult(X, order, shapes, results)
 end
 
 function _check_arity(stats::Tuple, want::Int)

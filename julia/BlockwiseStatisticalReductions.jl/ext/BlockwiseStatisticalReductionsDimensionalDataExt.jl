@@ -1,0 +1,6 @@
+module BlockwiseStatisticalReductionsDimensionalDataExt
+
+using DimensionalData: DimensionalData as DD
+using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions as BSR
+
+end

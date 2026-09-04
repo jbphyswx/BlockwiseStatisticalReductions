@@ -9,13 +9,5 @@ Documenter.makedocs(;
         canonical = "https://github.com/jbphyswx/BlockwiseStatisticalReductions.jl",
     ),
     checkdocs = :none,
-    pages = [
-        "Home" => "index.md",
-        "Getting Started" => "getting_started.md",
-        "Concepts" => [
-            "Overview & Theory" => "concepts/overview.md",
-            "The Tower & Lattice" => "concepts/tower.md",
-        ],
-        "API Reference" => "api/public.md",
-    ],
+    pages = ["Home" => "index.md"],
 )

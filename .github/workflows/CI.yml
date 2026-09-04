@@ -17,7 +17,7 @@ jobs:
       matrix:
         version: ['1.11', '1.12']
     env:
-      JULIA_NUM_THREADS: '2'   # exercise the threaded backend (serial==threaded parity)
+      JULIA_NUM_THREADS: '4'
     defaults:
       run:
         working-directory: julia/BlockwiseStatisticalReductions.jl
@@ -27,7 +27,5 @@ jobs:
         with:
           version: ${{ matrix.version }}
       - uses: julia-actions/cache@v2
-      # Runs the full suite: correctness, type-stability, zero-alloc, and backend parity
-      # (threaded via JULIA_NUM_THREADS, GPU via the KernelAbstractions CPU backend, MPI via mpiexec).
       - name: Test
         run: julia --project=. --color=yes -e 'using Pkg; Pkg.test()'

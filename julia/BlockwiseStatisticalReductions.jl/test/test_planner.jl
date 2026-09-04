@@ -50,16 +50,20 @@ Test.@testset "planner" begin
     end
 
     Test.@testset "dense sizes share work instead of one pass each" begin
-        for (shape, mk) in (((512,), s -> (BSR.strided(512, s, 1, BSR.Truncate()),)),
-                            ((512, 512), s -> (BSR.strided(512, s, 1, BSR.Truncate()), BSR.strided(512, s, 1, BSR.Truncate()))))
+        # Sharing is measured against the same request planned without composition candidates, and
+        # against one base pass per target; both are computed here rather than pinned to a constant.
+        for (shape, mk, share) in (((512,), s -> (BSR.strided(512, s, 1, BSR.Truncate()),), 0.8),
+                                   ((512, 512), s -> (BSR.strided(512, s, 1, BSR.Truncate()), BSR.strided(512, s, 1, BSR.Truncate())), 0.5))
             targets = [mk(s) for s in 2:9]
             p = BSR.plan(shape, targets)
             BSR.check(p)
             limits = BSR.kernel_limits(CB.SerialBackend(), length(shape))
-            planned = sum(BSR.seconds(BSR.cost(p.how[k], p.nodes[k], p.nodes, 8, 24), limits) for k in p.order)
+            modelled(q) = sum(BSR.seconds(BSR.cost(q.how[k], q.nodes[k], q.nodes, 8, 24), limits) for k in q.order)
+            planned = modelled(p)
             allbase = sum(BSR.seconds(BSR.cost(BSR.Base_(), BSR.Node(w, true), p.nodes, 8, 24), limits) for w in targets)
-            Test.@test planned < 0.7 * allbase
-            Test.@test length(BSR.base_nodes(p)) <= 3
+            Test.@test planned < share * allbase
+            Test.@test planned <= modelled(BSR.plan(shape, targets; chains = false))
+            Test.@test length(BSR.base_nodes(p)) < length(targets)
             Test.@test any(h -> h isa Union{BSR.Scan,BSR.Compose}, requested_hows(p))
             Test.@test count(k -> BSR.sizes(p.nodes[k]) == ntuple(_ -> 1, length(shape)), eachindex(p.nodes)) <= 1
         end

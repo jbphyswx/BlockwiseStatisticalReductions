@@ -47,7 +47,8 @@ end
 # Sharing thresholds sit just above what the request allows: a tower is one base pass plus a coarsen
 # chain (its floor is set by the traffic of the chain, which fusion will cut); a set of tile sizes needs
 # one base pass per size with no common divisor; dense windows are dominated by their own output writes.
-# Executor thresholds are 1.5 except where the cost model is optimistic (see the dense case).
+# Executor thresholds are 1.5: the cost model is calibrated against these kernels, so a plan that hits
+# the model lands near or below 1.
 scale_gates("6 scales [2..64] mean+var 4096² Float64", (4096, 4096), Float64,
             s -> BSR.resolve([2, 4, 8, 16, 32, 64], s), (BSR.Mean(), BSR.Var()); sharing = 0.30, efficiency = 1.2)
 # Every tile size 2..64: the 18 prime sizes have no common divisor, so ~18 base passes are unavoidable;
@@ -61,7 +62,7 @@ scale_gates("prime tiles {3,5,7,11,13}x{1,2,4,8} mean 4096² Float64", (4096, 40
 # Dense (stride-1) windows: outputs are as large as the input, so the write traffic dominates.
 scale_gates("15 dense sizes 2..16 mean 1024² Float64", (1024, 1024), Float64,
             s -> [(BSR.strided(1024, w, 1, BSR.Truncate()), BSR.strided(1024, w, 1, BSR.Truncate())) for w in 2:16],
-            (BSR.Mean(),); sharing = 0.25, efficiency = 3.2)
+            (BSR.Mean(),); sharing = 0.25, efficiency = 1.5)
 scale_gates("anchored Spread(3) 5 sizes mean 4096² Float64", (4096, 4096), Float64,
             s -> BSR.resolve(BSR.ScaleSet(BSR.Sizes([16, 32, 64, 128, 256]); placement = BSR.Spread(3)), s),
             (BSR.Mean(),); sharing = 1.0, efficiency = 1.5)

@@ -35,7 +35,8 @@ function explain(io::IO, p::Plan{N}; in_bytes::Int = 8, acc_bytes::Int = 24) whe
     end
     c = total_cost(p, in_bytes, acc_bytes)
     println(io, "  input passes ", round(input_passes(p); digits = 3), ", bytes ", round(c.bytes / 1e6; digits = 2), " MB, merges ",
-            round(c.merges / 1e6; digits = 2), " M, peak storage ", round(peak_bytes(p, acc_bytes) / 1e6; digits = 2), " MB")
+            round(c.merges / 1e6; digits = 2), " M (", round(c.serial_merges / 1e6; digits = 2), " M serial), peak storage ",
+            round(peak_bytes(p, acc_bytes) / 1e6; digits = 2), " MB")
     return nothing
 end
 

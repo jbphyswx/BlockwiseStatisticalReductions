@@ -65,11 +65,14 @@ Resolve a request against inputs shaped like `fields` (one array, or a `NamedTup
 same-shaped arrays) and allocate everything it needs. `scales` is anything [`resolve`](@ref) accepts.
 `stats` is a tuple of statistic tags; a tag bound to a field name or position selects which input it
 reads. Accumulation defaults to [`accumulation_eltype`](@ref) of the promoted input eltype and results
-to each tag's [`result_eltype`](@ref).
+to each tag's [`result_eltype`](@ref). `dimnames` names the axes, so a scale specification may address
+them by name; `spacing` gives their coordinates, so sizes may be given as a [`Length`](@ref) and results
+report the physical extent of every output cell.
 """
 function prepare(fields, scales; stats::Tuple, edge::EdgePolicy = Truncate(),
                  backend::CB.AbstractExecutionBackend = CB.AutoBackend(), acc_eltype = nothing,
-                 out_eltype = nothing, shift = :auto, memory_limit::Int = typemax(Int))
+                 out_eltype = nothing, shift = :auto, dimnames = nothing, spacing = nothing,
+                 memory_limit::Int = typemax(Int))
     fs = _fieldtuple(fields)
     _check_fields(fs)
     names = _fieldnames(fields)
@@ -77,7 +80,8 @@ function prepare(fields, scales; stats::Tuple, edge::EdgePolicy = Truncate(),
     N = length(shape)
     Tin = promote_type(map(eltype, fs)...)
     bk = resolve_backend(backend, fs)
-    targets = resolve(scales, shape; edge = edge)
+    _check_dimnames(dimnames, N)
+    targets = resolve(scales, shape; edge = edge, dimnames = dimnames, spacing = spacing)
     # Shifting keeps the offset out of every difference the moment kernels take, so the accumulation
     # eltype only has to resolve the spread of the data rather than its magnitude. That is what lets a
     # narrow input accumulate in its own eltype; `:auto` pays for it only where it buys something, which
@@ -91,7 +95,7 @@ function prepare(fields, scales; stats::Tuple, edge::EdgePolicy = Truncate(),
     p = plan(shape, targets; backend = bk, in_bytes, acc_bytes = sizeof(C), memory_limit)
     ws = allocate(p, C, fs[1])
     eltypes = out_eltype === nothing ? outs : ntuple(_ -> out_eltype, length(stats))
-    result = _allocate_results(p, targets, fs[1], statnames, eltypes)
+    result = _allocate_results(p, targets, fs[1], statnames, eltypes, dimnames, spacing)
     sh = _shift_state(shift, shifting, Tin, length(_bound_fields(C)))
     finalizers = _finalize_steps(p, ws, result, stats, routing, C, names)
     return Prepared{N,C,typeof(stats),typeof(routing),typeof(bk),typeof(ws),typeof(result),typeof(sh)}(
@@ -111,9 +115,17 @@ _bound_fields(::Type{Composite{M,B}}) where {M,B} = sort!(unique!(collect(Iterat
     end
 end
 
-function _allocate_results(p::Plan{N}, targets, proto::AbstractArray, statnames::Tuple, eltypes::Tuple) where {N}
+function _allocate_results(p::Plan{N}, targets, proto::AbstractArray, statnames::Tuple, eltypes::Tuple,
+                           dimnames, spacing) where {N}
     results = [NamedTuple{statnames}(ntuple(k -> similar(proto, eltypes[k], shape(w)), length(statnames))) for w in targets]
-    return ScaleResults(p.input_shape, collect(targets), results, p)
+    return ScaleResults(p.input_shape, collect(targets), results, p, statnames, dimnames, spacing)
+end
+
+_check_dimnames(::Nothing, N::Int) = nothing
+function _check_dimnames(names::Tuple, N::Int)
+    length(names) == N || throw(ArgumentError("$(length(names)) axis name(s) for $N axes"))
+    allunique(names) || throw(ArgumentError("axis names must be unique, got $names"))
+    return nothing
 end
 
 """

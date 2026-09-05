@@ -44,3 +44,24 @@ end
 cell_centers(sp::AxisSpacing, aw::AxisWindow) = [(lo + hi) / 2 for (lo, hi) in cell_bounds(sp, aw)]
 "Physical spans of every window."
 cell_spans(sp::AxisSpacing, aw::AxisWindow) = [hi - lo for (lo, hi) in cell_bounds(sp, aw)]
+
+"""
+    spacing_from_points(centers::AbstractVector) -> AxisSpacing
+
+The spacing of an axis whose coordinates are the cell centres `centers`. Evenly spaced centres give a
+[`Regular`](@ref) spacing; otherwise the edges are the midpoints between neighbours, with the outermost
+two reflected so the first and last cells keep their own width. One centre gives a unit-wide cell.
+"""
+function spacing_from_points(centers::AbstractVector)
+    n = length(centers)
+    n == 0 && throw(ArgumentError("an axis needs at least one coordinate"))
+    v = float.(collect(centers))
+    n == 1 && return Edges([v[1] - 0.5, v[1] + 0.5])
+    steps = diff(v)
+    all(>(0), steps) || throw(ArgumentError("axis coordinates must be strictly increasing"))
+    if all(s -> isapprox(s, steps[1]; rtol = 1e-9), steps)
+        return Regular(steps[1]; first = v[1] - steps[1] / 2)
+    end
+    mid = [(v[i] + v[i+1]) / 2 for i in 1:(n - 1)]
+    return Edges(vcat(v[1] - (mid[1] - v[1]), mid, v[end] + (v[end] - mid[end])))
+end

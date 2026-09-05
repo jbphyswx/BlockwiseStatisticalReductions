@@ -15,7 +15,9 @@ function __init__()
     return nothing
 end
 
-CB.is_gpu_array(x::AbstractArray) = !(KA.get_backend(x) isa KA.CPU)
+# `get_backend` throws for an array type no backend claims, so ask whether one does before believing it.
+CB.is_gpu_array(x::AbstractArray) =
+    hasmethod(KA.get_backend, Tuple{typeof(x)}) && !(KA.get_backend(x) isa KA.CPU)
 BSR.gpu_backend(fields::Tuple) = CB.GPUBackend(KA.get_backend(fields[1]))
 
 @inline _device(b::CB.AbstractGPUBackend) = b.backend

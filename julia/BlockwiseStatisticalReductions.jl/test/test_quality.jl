@@ -26,5 +26,9 @@ Test.@testset "ExplicitImports" begin
     Test.@test ExplicitImports.check_no_implicit_imports(BlockwiseStatisticalReductions) === nothing
     Test.@test ExplicitImports.check_no_stale_explicit_imports(BlockwiseStatisticalReductions) === nothing
     Test.@test ExplicitImports.check_all_explicit_imports_via_owners(BlockwiseStatisticalReductions) === nothing
-    Test.@test ExplicitImports.check_all_qualified_accesses_via_owners(BlockwiseStatisticalReductions) === nothing
+    # `CommonDataModel` is reached through NCDatasets on purpose: NCDatasets implements that interface and
+    # re-exports the module, so the extension can use the data model without a second package having to be
+    # loaded. Every other name must still come from its owner.
+    Test.@test ExplicitImports.check_all_qualified_accesses_via_owners(BlockwiseStatisticalReductions;
+                                                                      ignore = (:CommonDataModel,)) === nothing
 end

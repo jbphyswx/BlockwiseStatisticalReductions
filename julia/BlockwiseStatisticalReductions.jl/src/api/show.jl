@@ -10,7 +10,7 @@ function Base.show(io::IO, ::MIME"text/plain", r::ScaleResults{N}) where {N}
     end
     print(io, "  index by size, e.g. r[", map(aw -> aw.size, r.windows[1]), "].", first(_statnames(r)))
 end
-_statnames(::ScaleResults{N,NT}) where {N,NT} = fieldnames(NT)
+_statnames(r::ScaleResults) = r.statnames
 
 Base.show(io::IO, p::Prepared{N}) where {N} =
     print(io, "Prepared{", N, "}(", p.input_shape, ": ", length(p.fieldnames), " field(s), ",

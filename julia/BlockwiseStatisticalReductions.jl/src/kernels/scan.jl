@@ -7,6 +7,20 @@ end
 ScanScratch(::Type{A}, size::Integer) where {A} =
     ScanScratch(Vector{A}(undef, size), Vector{A}(undef, size), Vector{A}(undef, size))
 
+"Validate a scan and return the lines it runs over: every index off `axis`, with `axis` pinned to 1."
+function scan_lines(out::AccumulatorArray{A,N}, src::AccumulatorArray{A,N}, axis::Int, size::Int, partial::Bool,
+                    scratch::ScanScratch{A}) where {A,N}
+    1 <= axis <= N || throw(ArgumentError("axis $axis out of range"))
+    size >= 1 || throw(ArgumentError("window size must be ≥ 1"))
+    n = Base.size(src, axis)
+    m = partial ? n : max(n - size + 1, 0)
+    Base.size(out, axis) == m || throw(DimensionMismatch("output has $(Base.size(out, axis)) cells along axis $axis, expected $m"))
+    all(d -> d == axis || Base.size(out, d) == Base.size(src, d), 1:N) ||
+        throw(DimensionMismatch("output $(Base.size(out)) does not match source $(Base.size(src)) off axis $axis"))
+    length(scratch.values) >= size || throw(ArgumentError("scratch holds $(length(scratch.values)) < $size accumulators"))
+    return CartesianIndices(ntuple(d -> d == axis ? (1:1) : (1:Base.size(src, d)), Val(N)))
+end
+
 """
     scan!(out, src, axis, size, partial, scratch, backend) -> out
 
@@ -16,16 +30,7 @@ clipped; otherwise it has `extent - size + 1` cells along `axis`. Any monoid; no
 """
 function scan!(out::AccumulatorArray{A,N}, src::AccumulatorArray{A,N}, axis::Int, size::Int, partial::Bool,
                scratch::ScanScratch{A}, ::CB.AbstractSerialBackend) where {A,N}
-    1 <= axis <= N || throw(ArgumentError("axis $axis out of range"))
-    size >= 1 || throw(ArgumentError("window size must be ≥ 1"))
-    n = Base.size(src, axis)
-    m = partial ? n : max(n - size + 1, 0)
-    Base.size(out, axis) == m || throw(DimensionMismatch("output has $(Base.size(out, axis)) cells along axis $axis, expected $m"))
-    all(d -> d == axis || Base.size(out, d) == Base.size(src, d), 1:N) ||
-        throw(DimensionMismatch("output $(Base.size(out)) does not match source $(Base.size(src)) off axis $axis"))
-    length(scratch.values) >= size || throw(ArgumentError("scratch holds $(length(scratch.values)) < $size accumulators"))
-    lines = CartesianIndices(ntuple(d -> d == axis ? (1:1) : (1:Base.size(src, d)), Val(N)))
-    for L in lines
+    for L in scan_lines(out, src, axis, size, partial, scratch)
         _scan_line!(out, src, axis, L, size, partial, scratch)
     end
     return out

@@ -72,6 +72,7 @@ end
 
 include("gates_kernels.jl")
 include("gates_multiscale.jl")
+include("gates_threaded.jl")
 
 if abspath(PROGRAM_FILE) == @__FILE__
     exit(main())

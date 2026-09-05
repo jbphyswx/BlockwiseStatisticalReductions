@@ -107,6 +107,6 @@ Test.@testset "planner" begin
         Test.@test occursin("2 requested", s) && occursin("base pass", s) && occursin("input passes", s)
         d = BSR.dot(p)
         Test.@test occursin("digraph", d) && count("->", d) == length(p.nodes)
-        Test.@test_throws ArgumentError BSR.plan(shape, BSR.resolve([4], shape); backend = CB.ThreadedBackend())
+        Test.@test_throws ArgumentError BSR.plan(shape, BSR.resolve([4], shape); backend = CB.MPIBackend())
     end
 end

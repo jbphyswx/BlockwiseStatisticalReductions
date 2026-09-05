@@ -10,4 +10,5 @@ Test.@testset "BlockwiseStatisticalReductions" begin
     include("test_planner.jl")
     include("test_execute.jl")
     include("test_api.jl")
+    include("test_threaded.jl")
 end

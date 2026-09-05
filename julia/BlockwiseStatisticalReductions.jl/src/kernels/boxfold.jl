@@ -246,8 +246,8 @@ boxfold!(out::AccumulatorArray{A,N}, src, w::Window{N}, ::Val, b::CB.AbstractExe
 `out[I] = merge(a[Ia], b[Ib])` where `Ia`/`Ib` are `I` with the `axis` index replaced by
 `amap[I[axis]]`/`bmap[I[axis]]`; the other axes must match between `out`, `a` and `b`.
 """
-function compose!(out::AccumulatorArray{A,N}, a::AccumulatorArray{A,N}, b::AccumulatorArray{A,N},
-                  axis::Int, amap::AbstractVector{Int}, bmap::AbstractVector{Int}, ::CB.AbstractSerialBackend) where {A,N}
+function check_compose(out::AccumulatorArray{A,N}, a::AccumulatorArray{A,N}, b::AccumulatorArray{A,N},
+                      axis::Int, amap::AbstractVector{Int}, bmap::AbstractVector{Int}) where {A,N}
     1 <= axis <= N || throw(ArgumentError("axis $axis out of range"))
     n = size(out, axis)
     length(amap) == n || throw(DimensionMismatch("$(length(amap)) first-parent indices for $n cells"))
@@ -259,11 +259,23 @@ function compose!(out::AccumulatorArray{A,N}, a::AccumulatorArray{A,N}, b::Accum
     end
     (isempty(amap) || (1 <= minimum(amap) && maximum(amap) <= size(a, axis))) || throw(BoundsError(a, maximum(amap)))
     (isempty(bmap) || (1 <= minimum(bmap) && maximum(bmap) <= size(b, axis))) || throw(BoundsError(b, maximum(bmap)))
+    return nothing
+end
+
+"`out[I]` for one cell of a compose: the merge of each parent at its mapped index along `axis`."
+@inline function compose_cell(a::AccumulatorArray{A,N}, b::AccumulatorArray{A,N}, I::CartesianIndex{N},
+                              axis::Int, amap::AbstractVector{Int}, bmap::AbstractVector{Int}) where {A,N}
+    i = I[axis]
+    @inbounds Ia = CartesianIndex(Base.setindex(Tuple(I), amap[i], axis))
+    @inbounds Ib = CartesianIndex(Base.setindex(Tuple(I), bmap[i], axis))
+    return @inbounds merge(a[Ia], b[Ib])
+end
+
+function compose!(out::AccumulatorArray{A,N}, a::AccumulatorArray{A,N}, b::AccumulatorArray{A,N},
+                  axis::Int, amap::AbstractVector{Int}, bmap::AbstractVector{Int}, ::CB.AbstractSerialBackend) where {A,N}
+    check_compose(out, a, b, axis, amap, bmap)
     @inbounds for I in CartesianIndices(size(out))
-        i = I[axis]
-        Ia = CartesianIndex(Base.setindex(Tuple(I), amap[i], axis))
-        Ib = CartesianIndex(Base.setindex(Tuple(I), bmap[i], axis))
-        out[I] = merge(a[Ia], b[Ib])
+        out[I] = compose_cell(a, b, I, axis, amap, bmap)
     end
     return out
 end

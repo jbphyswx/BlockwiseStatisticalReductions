@@ -150,9 +150,10 @@ Test.@testset "kernels" begin
         x = randn(8, 8)
         w = BSR.tiled((8, 8), (2, 2), BSR.Truncate())
         out = allocate(BSR.MeanAcc{Float64}, w, x)
-        Test.@test_throws ArgumentError BSR.boxfold!(out, (x,), w, CB.ThreadedBackend())
-        Test.@test_throws ArgumentError BSR.boxfold!(out, (x,), w, CB.AutoBackend())
+        # MPI has no extension loaded in this session; AutoBackend must be resolved before kernels run.
         Test.@test_throws ArgumentError BSR.boxfold!(out, (x,), w, CB.MPIBackend())
+        Test.@test_throws ArgumentError BSR.boxfold!(out, (x,), w, CB.AutoBackend())
+        Test.@test_throws ArgumentError BSR.missing_extension(CB.ThreadedBackend())
     end
 
     Test.@testset "inference and zero allocation" begin

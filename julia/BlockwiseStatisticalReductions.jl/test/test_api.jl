@@ -115,7 +115,7 @@ Test.@testset "api" begin
 
     Test.@testset "prepared handle: reuse, zero allocation, aliasing" begin
         x = randn(64, 64)
-        p = BSR.prepare(x, [4, 8]; stats = (BSR.Mean(), BSR.Var()))
+        p = BSR.prepare(x, [4, 8]; stats = (BSR.Mean(), BSR.Var()), backend = CB.SerialBackend())
         r1 = BSR.blockstats!(p, x)
         Test.@test r1[(4, 4)].mean ≈ brute(Statistics.mean, x, BSR.windows(r1)[1])
         Test.@test (Test.@inferred BSR.blockstats!(p, x)) isa BSR.ScaleResults
@@ -127,7 +127,7 @@ Test.@testset "api" begin
         Test.@test all(≈(2.0), r2[(8, 8)].mean) && all(≈(0.0; atol = 1e-12), r2[(8, 8)].var)
         # a one-shot call matches the prepared one
         Test.@test BSR.blockstats(x, [4, 8]; stats = (BSR.Mean(), BSR.Var()))[(8, 8)].var ≈ BSR.blockstats!(p, x)[(8, 8)].var
-        pm = BSR.prepare((a = x, b = x), [8]; stats = (BSR.Cov(:a, :b),))
+        pm = BSR.prepare((a = x, b = x), [8]; stats = (BSR.Cov(:a, :b),), backend = CB.SerialBackend())
         BSR.blockstats!(pm, (a = x, b = x))
         Test.@test (@allocated BSR.blockstats!(pm, (a = x, b = x))) == 0
     end
@@ -203,15 +203,15 @@ Test.@testset "api" begin
         Test.@test a[(8, 8)].min_x == b[(8, 8)].min_x            # exact: the shift cancels
         Test.@test a[(8, 8)].cov_x_y ≈ b[(8, 8)].cov_x_y rtol = 1e-5
         # a prepared request re-centres on each new input
-        p = BSR.prepare(randn(Float32, 64, 64), [8]; stats = (BSR.Var(),), out_eltype = Float64)
+        p = BSR.prepare(randn(Float32, 64, 64), [8]; stats = (BSR.Var(),), out_eltype = Float64, backend = CB.SerialBackend())
         far = Float32.(1e4 .+ 1e-3 .* randn(64, 64))
         r = BSR.blockstats!(p, far)
         Test.@test BSR.shifts(p)[1] ≈ 1e4 rtol = 1e-3
         Test.@test all(v -> 1e-7 < v < 1e-5, r[(8, 8)].var)      # ≈ (1e-3)^2, not swamped by the offset
         # wrapping each field with its shift costs a few bytes per field per call; what matters is that
         # it does not grow with the input
-        small = BSR.prepare(Float32.(1e4 .+ randn(Float32, 64, 64)), [8]; stats = (BSR.Var(),))
-        big = BSR.prepare(Float32.(1e4 .+ randn(Float32, 256, 256)), [8]; stats = (BSR.Var(),))
+        small = BSR.prepare(Float32.(1e4 .+ randn(Float32, 64, 64)), [8]; stats = (BSR.Var(),), backend = CB.SerialBackend())
+        big = BSR.prepare(Float32.(1e4 .+ randn(Float32, 256, 256)), [8]; stats = (BSR.Var(),), backend = CB.SerialBackend())
         xs = randn(Float32, 64, 64); xb = randn(Float32, 256, 256)
         BSR.blockstats!(small, xs); BSR.blockstats!(big, xb)
         Test.@test (@allocated BSR.blockstats!(small, xs)) == (@allocated BSR.blockstats!(big, xb)) <= 64
@@ -227,6 +227,6 @@ Test.@testset "api" begin
         Test.@test_throws ArgumentError BSR.blockstats(x, [64]; stats = (BSR.Mean(),))        # window exceeds the extent
         p = BSR.prepare(x, [8]; stats = (BSR.Mean(),))
         Test.@test_throws DimensionMismatch BSR.blockstats!(p, randn(16, 16))
-        Test.@test_throws ArgumentError BSR.blockstats(x, [8]; stats = (BSR.Mean(),), backend = CB.ThreadedBackend())
+        Test.@test_throws ArgumentError BSR.blockstats(x, [8]; stats = (BSR.Mean(),), backend = CB.MPIBackend())
     end
 end

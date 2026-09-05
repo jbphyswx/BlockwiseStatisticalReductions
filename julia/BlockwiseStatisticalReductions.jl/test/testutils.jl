@@ -1,45 +1,45 @@
-using BlockwiseStatisticalReductions
-using Test, Random, Statistics
+using Statistics: Statistics
+using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions as BSR
 
-const BSR = BlockwiseStatisticalReductions
-
-# Brute-force non-overlapping block reduction of `f` over `data` (reference for correctness tests).
-function brute(f, data::AbstractArray{T,N}, window::NTuple{N,Int}) where {T,N}
-    osh = ntuple(i -> size(data, i) ÷ window[i], N)
-    out = Array{Float64,N}(undef, osh)
+# Brute-force reference: `f` over the elements of every window of `w` in `data`.
+function brute(f, data::AbstractArray{T,N}, w::BSR.Window{N}) where {T,N}
+    out = Array{Float64,N}(undef, BSR.shape(w))
     for I in CartesianIndices(out)
-        lo = ntuple(i -> (I[i] - 1) * window[i] + 1, N)
-        hi = ntuple(i -> I[i] * window[i], N)
-        out[I] = f(vec(collect(@view data[ntuple(i -> lo[i]:hi[i], N)...])))
+        rngs = ntuple(d -> BSR.window_range(w[d], I[d]), N)
+        out[I] = f(vec(collect(view(data, rngs...))))
     end
     return out
 end
 
-# Brute-force block covariance of `x,y`.
-function brute_cov(x::AbstractArray{T,N}, y::AbstractArray{T,N}, window::NTuple{N,Int}; corrected=true) where {T,N}
-    osh = ntuple(i -> size(x, i) ÷ window[i], N)
-    out = Array{Float64,N}(undef, osh)
+# Brute-force reference for a two-field statistic.
+function brute2(f, x::AbstractArray{T,N}, y::AbstractArray{T,N}, w::BSR.Window{N}) where {T,N}
+    out = Array{Float64,N}(undef, BSR.shape(w))
     for I in CartesianIndices(out)
-        lo = ntuple(i -> (I[i] - 1) * window[i] + 1, N)
-        hi = ntuple(i -> I[i] * window[i], N)
-        rng = ntuple(i -> lo[i]:hi[i], N)
-        out[I] = cov(vec(collect(@view x[rng...])), vec(collect(@view y[rng...])); corrected = corrected)
+        rngs = ntuple(d -> BSR.window_range(w[d], I[d]), N)
+        out[I] = f(vec(collect(view(x, rngs...))), vec(collect(view(y, rngs...))))
     end
     return out
 end
 
-# Finalize an array of accumulators into a statistic (single-accumulator arrays).
-vals(stat, accs, ::Type{Tout}) where {Tout} = map(a -> result_value(stat, a, Tout), accs)
-
-# Brute-force overlapping (sliding) window reduction of `f` over `data`.
-function brute_sliding(f, data::AbstractArray{T,N}, w::NTuple{N,Int}, s::NTuple{N,Int}, o::NTuple{N,Int}) where {T,N}
-    md = ntuple(d -> size(data, d) - w[d] + 1, N)
-    osz = ntuple(d -> (md[d] - o[d]) ÷ s[d] + 1, N)
-    out = Array{Float64,N}(undef, osz)
-    for I in CartesianIndices(out)
-        p = ntuple(d -> o[d] + (I[d] - 1) * s[d], N)
-        rng = ntuple(d -> p[d]:p[d] + w[d] - 1, N)
-        out[I] = f(vec(collect(@view data[rng...])))
-    end
-    return out
+# Elementwise approximate equality that treats NaN == NaN (undefined statistics of tiny windows).
+function approx_nan(a::AbstractArray, b::AbstractArray; rtol = 1e-9, atol = 0.0)
+    size(a) == size(b) || return false
+    return all(i -> (isnan(a[i]) && isnan(b[i])) || isapprox(a[i], b[i]; rtol = rtol, atol = atol), eachindex(a, b))
 end
+
+# Allocate storage for accumulator `A` over the cells of window `w`, matching `proto`'s array type.
+allocate(::Type{A}, w::BSR.Window, proto::AbstractArray) where {A} = BSR.AccumulatorArray(A, proto, BSR.shape(w))
+
+# Finalize `tag` from member `k` of composite storage into a fresh Float64 array.
+function values_of(accs::BSR.AccumulatorArray, tag, ::Val{k}) where {k}
+    src = BSR.member_array(accs, Val(k))
+    return BSR.finalize!(Array{Float64}(undef, size(src)), src, tag, BSR.CB.SerialBackend())
+end
+values_of(accs::BSR.AccumulatorArray, tag) = BSR.finalize!(Array{Float64}(undef, size(accs)), accs, tag, BSR.CB.SerialBackend())
+
+using Adapt: Adapt
+
+# An accumulator array with its components copied to the host in bulk. Comparing two device accumulator
+# arrays directly would index them one cell at a time, which on a device array is both slow and, under
+# `allowscalar(false)`, an error.
+host_accumulators(aa::BSR.AccumulatorArray) = collect(Adapt.adapt(Array, aa))

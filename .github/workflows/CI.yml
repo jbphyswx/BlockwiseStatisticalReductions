@@ -2,7 +2,9 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['*']
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -12,12 +14,18 @@ jobs:
   test:
     name: Julia ${{ matrix.version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        version: ['1.11', '1.12']
+        # 1.11 is the floor ([workspace] and [sources] need it); '1' tracks the latest stable.
+        version: ['1.11', '1']
+        include:
+          - version: 'nightly'
+    continue-on-error: ${{ matrix.version == 'nightly' }}
     env:
-      JULIA_NUM_THREADS: '2'   # exercise the threaded backend (serial==threaded parity)
+      # The threaded backend is only exercised with more than one thread.
+      JULIA_NUM_THREADS: '4'
     defaults:
       run:
         working-directory: julia/BlockwiseStatisticalReductions.jl
@@ -27,7 +35,31 @@ jobs:
         with:
           version: ${{ matrix.version }}
       - uses: julia-actions/cache@v2
-      # Runs the full suite: correctness, type-stability, zero-alloc, and backend parity
-      # (threaded via JULIA_NUM_THREADS, GPU via the KernelAbstractions CPU backend, MPI via mpiexec).
+      # The suite covers every backend on one runner: the GPU kernels through the KernelAbstractions
+      # CPU backend and JLArrays, MPI through the `mpiexec` MPICH_jll ships, and Distributed through
+      # workers it starts itself. No GPU and no system MPI are needed.
       - name: Test
         run: julia --project=. --color=yes -e 'using Pkg; Pkg.test()'
+
+  examples:
+    name: Examples
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: julia/BlockwiseStatisticalReductions.jl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v2
+      - name: Instantiate
+        run: julia --project=examples --color=yes -e 'using Pkg; Pkg.instantiate()'
+      - name: Run every example
+        run: |
+          for f in examples/*.jl; do
+            echo "::group::$f"
+            julia --project=examples --color=yes "$f"
+            echo "::endgroup::"
+          done

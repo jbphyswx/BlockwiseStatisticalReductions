@@ -1,16 +1,18 @@
 # Examples
 
-Run any example with the `examples` project active:
+Each script is self-contained and runnable:
 
 ```bash
-julia --project=examples examples/basic_usage.jl
-julia -t4 --project=examples examples/backends.jl     # multithreaded
+julia --project=examples examples/01_basic.jl
 ```
 
-| File | Shows |
-|------|-------|
-| [`basic_usage.jl`](basic_usage.jl) | several statistics at several scales in one pass; anisotropic factors; inspecting the plan |
-| [`sliding_windows.jl`](sliding_windows.jl) | overlapping windows (`Sliding`), `stride == window` == blockwise, sliding covariance |
-| [`custom_statistic.jl`](custom_statistic.jl) | defining your own statistic (geometric mean) with no changes to the package |
-| [`backends.jl`](backends.jl) | serial / threaded / distributed parity; zero-allocation reuse |
-| [`multiscale_showcase.jl`](multiscale_showcase.jl) | generates the frontline figure: a power-law field, its block-mean pyramid, and variance vs scale |
+| Script | Shows |
+|---|---|
+| `01_basic.jl` | one array, several tile sizes, reading the results |
+| `02_multifield.jl` | variances and a covariance of two fields in one pass |
+| `03_sliding.jl` | overlapping and anchored windows |
+| `04_prepared.jl` | one plan reused over many inputs, allocation-free |
+| `05_labelled.jl` | axis names, physical coordinates, sizes in physical units |
+| `06_weights.jl` | weighted statistics and skipping gaps |
+| `07_backends.jl` | threaded and GPU backends |
+| `08_distributed.jl` | a tensor split across worker processes |

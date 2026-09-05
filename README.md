@@ -1,47 +1,54 @@
 # BlockwiseStatisticalReductions
 
-N-dimensional blockwise and rolling-window statistical reductions for Python and Julia.
+N-dimensional blockwise and rolling-window statistical reductions, over **many window sizes at once**.
 
-This repository contains two implementations:
-- **`julia/`** - Julia package with OnlineStats, Dask-like plans, and GPU extensions
-- **`python/`** - Python package with Numba, Dask, and Xarray integration
+Two independent implementations live here:
 
-## Features (Both Implementations)
-
-- **Blockwise (Tiled) Reductions**: Non-overlapping window statistics
-- **Rolling Window Statistics**: Overlapping windows with configurable stride
-- **Tree Reductions**: Hierarchical merge operations for parallel scalability
-- **Exact Divisibility Validation**: Strict mode for scientific applications
-- **Deduplication**: Cache identical operations in plan graphs
-- **Parallel Backends**: CPU, distributed (Dask/Distributed), GPU (CUDA/JAX)
+- **`julia/BlockwiseStatisticalReductions.jl/`** — a planned tree of reductions that touches the data as
+  close to once as possible, on CPU, GPU, MPI and Distributed.
+- **`python/`** — Numba kernels with Dask and Xarray integration.
 
 ## Julia Package
 
-See [`julia/README.md`](julia/README.md) for details.
+![Tile means at four scales, from one pass over the field](julia/BlockwiseStatisticalReductions.jl/docs/src/assets/scales.png)
 
-### Quick Start
 ```julia
 using BlockwiseStatisticalReductions
 
-# Blockwise mean
-data = rand(100, 100)
-config = WindowConfig((10, 10))
-result = blockwise_stats(data, (10, 10), :mean, strict=true)
+x = randn(4096, 4096)
+r = blockstats(x, [2, 4, 8, 16, 32, 64]; stats = (Mean(), Var()))
 
-# DAG plan with branching
-builder = build_plan((100, 100))
-branches = fork(builder, 2)  # Horizontal and vertical reductions
-# ... configure branches ...
-merge_branches!(builder, branches, merge_fn)
-plan = finalize_plan(builder)
+r[(8, 8)].mean        # 512×512 array of tile means
+r[(64, 64)].var       # 64×64 array of tile variances
 ```
 
-### Key Features
-- `OnlineStats.jl` integration for mergeable streaming statistics
-- `fork()` / `merge_branches!()` for DAG plan structures
-- `tiled_stats()` with tree reduction via `OnlineStats.merge!`
-- `validate_window_config()` with strict exact divisibility
-- Cache deduplication via semantic (not node ID) hashing
+Every statistic is a mergeable monoid over sufficient statistics, so a coarse window is the merge of finer
+ones and the sizes you ask for can be built from each other instead of from the input. The planner searches
+that space and picks the cheapest tree, inventing intermediate sizes where they let targets share work:
+
+![The plan for five tile sizes, against one pass each](julia/BlockwiseStatisticalReductions.jl/docs/src/assets/plan.png)
+
+Cost then stops growing with the number of scales:
+
+![Cost against the number of scales requested](julia/BlockwiseStatisticalReductions.jl/docs/src/assets/cost.png)
+
+Tiles, overlapping windows at any stride, dense windows and windows at hand-picked anchors are all the
+same geometry object, in any number of dimensions and with a different size per axis:
+
+![Tiles, strided windows, anchors and anisotropic windows](julia/BlockwiseStatisticalReductions.jl/docs/src/assets/windows.png)
+
+Count, sum, mean, variance, extrema, raw and central moments, skewness, kurtosis, covariance, correlation
+and product mean — statistics of different fields fuse into one pass. Labelled axes, physical window
+sizes, weights, NaN skipping, and `DimArray`/NetCDF/Zarr inputs are all supported.
+
+See [`julia/BlockwiseStatisticalReductions.jl/README.md`](julia/BlockwiseStatisticalReductions.jl/README.md)
+for details, [`examples/`](julia/BlockwiseStatisticalReductions.jl/examples) for runnable scripts, and
+[`MIGRATION.md`](julia/BlockwiseStatisticalReductions.jl/MIGRATION.md) if you used version 0.1.
+
+```julia
+import Pkg
+Pkg.add(url = "https://github.com/jbphyswx/BlockwiseStatisticalReductions", subdir = "julia/BlockwiseStatisticalReductions.jl")
+```
 
 ## Python Package
 
@@ -78,27 +85,33 @@ result = xr_blockwise_stats(da, {"x": 10, "y": 10}, "mean", strict=True)
 
 ```
 BlockwiseStatisticalReductions/
-├── julia/                          # Julia implementation
-│   ├── src/                        # Source code
-│   ├── test/                       # Test suite
-│   ├── ext/                        # Package extensions (CUDA, JLD2, OhMyThreads)
-│   ├── Project.toml                # Julia package manifest
-│   └── README.md                   # Julia-specific docs
-├── python/                         # Python implementation
+├── julia/
+│   └── BlockwiseStatisticalReductions.jl/
+│       ├── src/                    # statistics · geometry · scales · planner · kernels · execute · api
+│       ├── ext/                    # OhMyThreads, KernelAbstractions, CUDA, DimensionalData,
+│       │                           #   NCDatasets, Zarr, MPI, Distributed
+│       ├── test/                   # one file per layer, plus backend and I/O parity
+│       ├── benchmark/              # roofline-relative performance gates
+│       ├── docs/                   # Documenter site
+│       ├── examples/               # runnable scripts
+│       └── gpu/                    # hardware-gated CUDA tests
+├── python/
 │   ├── src/blockwise_statistical_reductions/
 │   ├── tests/                      # pytest test suite
-│   ├── pyproject.toml              # Python package config
-│   └── README.md                   # Python-specific docs
-└── README.md                       # This file
+│   └── pyproject.toml
+└── README.md                       # this file
 ```
 
 ## Development
 
 ### Julia
 ```bash
-cd julia
+cd julia/BlockwiseStatisticalReductions.jl
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
-julia --project=. -e 'using BlockwiseStatisticalReductions'
+julia --project=. -e 'using Pkg; Pkg.test()'
+
+julia --project=docs docs/make.jl                                   # documentation
+julia --project=benchmark benchmark/gates.jl --only=kernels,planner  # performance gates
 ```
 
 ### Python

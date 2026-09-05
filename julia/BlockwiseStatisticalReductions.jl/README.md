@@ -1,139 +1,83 @@
 # BlockwiseStatisticalReductions.jl
 
-A **purpose-agnostic** engine for computing statistics over N-dimensional data at *many coarser
-scales at once* — efficiently, by reusing intermediate results so the data is touched as few times
-as possible.
-
-Give it an array and a set of scales; get back means / variances / covariances / extrema / moments
-(or your own statistic) at every scale, computed in roughly a single pass over the data. Typical
-uses: multi-scale features for ML training from high-resolution fields, image/volume pyramids,
-downsampling of simulation or observational data, and any scale-dependent statistics.
-
-![Multi-scale statistics in one pass](docs/src/assets/multiscale_showcase.png)
+Mergeable statistics of an N-dimensional tensor over **many window sizes at once**, computed by a planned
+tree of reductions that touches the data as close to once as possible — on CPU, GPU, and across processes.
 
 ```julia
 using BlockwiseStatisticalReductions
 
-data = randn(2048, 2048)
+x = randn(4096, 4096)
+r = blockstats(x, [2, 4, 8, 16, 32, 64]; stats = (Mean(), Var()))
 
-# mean and variance at 2×, 4×, 8×, …, 64× coarsening — one near-single-pass computation
-r = reduce_stats(data, [2, 4, 8, 16, 32, 64]; stats = (Mean(), Var()))
-
-r[(8, 8)].mean      # 256×256 array of block means at 8× coarsening
-r[(8, 8)].var       # … and variances
-factors(r)          # the scales present, finest first
+r[(8, 8)].mean        # 512×512 array of tile means
+r[(64, 64)].var       # 64×64 array of tile variances
 ```
+
+![Tile means at four scales, from one pass over the field](docs/src/assets/scales.png)
 
 ## Why it is fast
 
-Every statistic is a **mergeable monoid** over sufficient statistics: a coarse block is *exactly*
-the `merge` of its finer child blocks. So the scales form a tree (a DAG over the divisor lattice of
-block sizes), and each scale is built by coarsening the nearest finer scale already computed —
-instead of re-reading the data once per scale.
+Every statistic here is a mergeable monoid over sufficient statistics — a variance is `(n, mean, M2)`, and
+two of those combine into one without revisiting the data. So a 64-cell tile is the merge of two 32-cell
+tiles, a 12-cell window is a 8-cell window merged with a 4-cell one shifted by 8, and the sizes you asked
+for can be built from each other instead of from the input.
 
-```
-=== 4096×4096, mean+var at scales [2,4,8,16,32,64] (8 threads) ===
-  tower (serial):    305 ms
-  naive independent: 1102 ms   (3.6× slower)
-  tower (threaded):  106 ms    (2.9× vs serial tower)
-  plan work / naive work = 0.222     # touches the data ~once, not once-per-scale
-  steady-state allocations, variance tower: 0 bytes
-```
+The planner searches that space and picks the cheapest tree. Ask for five tile sizes and it will find the
+one extra size that lets four of them share a parent:
 
-The results are **numerically exact** (Welford + Chan/Pebay merges; never mean-pooling of child
-variances), **type-stable**, and **allocation-free** at steady state — including for variance and
-covariance.
+![The plan for five tile sizes, against one pass each](docs/src/assets/plan.png)
+
+The result is that cost stops growing with the number of scales:
+
+![Cost against the number of scales requested](docs/src/assets/cost.png)
+
+## What you can ask for
+
+Tiles, overlapping windows at any stride, dense windows, windows at hand-picked anchors — all the same
+geometry object, all planned together, in any number of dimensions and with a different size per axis:
+
+![Tiles, strided windows, anchors and anisotropic windows](docs/src/assets/windows.png)
+
+```julia
+blockstats(x, ScaleSet(Sizes([16]); placement = Stride(4)); stats = (Mean(), Var()))
+blockstats(x, ScaleSet((Dyadic(max = 64), Dyadic(max = 64), Fixed(1)); combine = Product()); stats = (Mean(),))
+blockstats(x, spec; stats = (Mean(),), edge = Partial())     # keep the clipped edge, with its true counts
+```
 
 ## What it computes
 
-Built-in statistics (compose any of them in one pass):
+- **Many statistics, one pass.** Count, sum, mean, variance, standard deviation, min/max/extrema, raw and
+  central moments, skewness, kurtosis, covariance, correlation, product mean — and the raw numerators
+  behind them. Statistics of different fields fuse: `Var(:u)`, `Var(:w)` and `Cov(:u, :w)` cost one pass
+  over both arrays, not three.
 
-| Tag | Statistic |
-|-----|-----------|
-| `Count()` | number of elements per block |
-| `Sum()` | sum |
-| `Mean()` | mean |
-| `Var(; corrected=true)` / `Std(; corrected=true)` | variance / standard deviation |
-| `Cov(; corrected=true)` | covariance of a field pair |
-| `Min()` / `Max()` | extrema |
-| `Moments(K)` | raw moments `E[xᵏ]`, k = 1..K |
+  ```julia
+  blockstats((u = u, w = w), [8]; stats = (var_u = Var(:u), var_w = Var(:w), flux = Cov(:u, :w)))
+  ```
 
-Requesting several statistics over the same field computes them together and shares work — e.g.
-`(Count(), Sum(), Mean(), Var())` all come from a single variance accumulator.
+- **Numerics that hold up.** Welford lifts, Chan/Pébay merges, two-pass second moments inside each box,
+  and shifted accumulation so a `Float32` input with a large offset stays accurate in `Float32`.
+- **Labelled axes.** Name the axes, give them coordinates, ask for sizes in physical units, and get back
+  the true bounds of every output cell. Reads `DimArray`s, NetCDF variables and Zarr arrays directly.
+- **Weights and gaps.** Per-element or separable per-axis weights, frequency and reliability corrections,
+  and non-finite observations skipped per statistic.
+- **Backends.** Serial, threaded (OhMyThreads), GPU (KernelAbstractions / CUDA), and two ways to span
+  processes (MPI over a partitioned tensor, Distributed over scattered slabs) — all through the
+  [ComputationalBackends.jl](https://github.com/jbphyswx/ComputationalBackends.jl) vocabulary.
+- **Allocation-free steady state.** `prepare` once, `blockstats!` per input, zero bytes per call.
 
-## Scales
-
-```julia
-# explicit isotropic block sizes
-reduce_stats(data, [4, 8, 16]; stats = (Mean(),))
-
-# anisotropic / partial-dimension (factor 1 leaves a dimension unreduced)
-reduce_stats(data, [(4, 4, 1), (8, 8, 1)]; stats = (Mean(),))
-
-# a full tower: finest block, per-level multipliers, coarsest block
-reduce_stats(data, Tower(base_factor = 2, steps = [2, 3], maxfactor = 64); stats = (Mean(), Std()))
-
-# covariance of a field pair
-reduce_stats(x, y, [8, 16]; stats = (Cov(),))
-
-# overlapping (sliding) windows — stride < window; stride == window is blockwise
-reduce_stats(data, [Sliding((16, 16); stride = (4, 4))]; stats = (Mean(), Var()))
-```
-
-## Backends
-
-Selected with the `backend` keyword; all produce identical results.
+## Installation
 
 ```julia
-reduce_stats(data, [4,8]; stats=(Var(),), backend = SerialBackend())          # default
-reduce_stats(data, [4,8]; stats=(Var(),), backend = ThreadedBackend())        # using OhMyThreads
-reduce_stats(data, [4,8]; stats=(Var(),), backend = DistributedBackend())     # using Distributed, SharedArrays
-reduce_stats(data, [4,8]; stats=(Var(),), backend = AutoBackend())            # best available
+import Pkg
+Pkg.add(url = "https://github.com/jbphyswx/BlockwiseStatisticalReductions", subdir = "julia/BlockwiseStatisticalReductions.jl")
 ```
 
-`ThreadedBackend` requires `using OhMyThreads`; `DistributedBackend` requires
-`using Distributed, SharedArrays`; a KernelAbstractions/CUDA GPU backend is planned.
+## Documentation
 
-## Zero-allocation repeated execution
+Concepts, worked examples and the API reference are in `docs/`; build them with
+`julia --project=docs docs/make.jl`. Runnable scripts live in [`examples/`](examples). Upgrading from the previous
+implementation is covered in [`MIGRATION.md`](MIGRATION.md), and [`AGENTS.md`](AGENTS.md) describes the layering.
 
-For streaming / repeated calls, build the plan and buffers once and reuse them:
-
-```julia
-plan = tower_plan(size(data); base_factor = (2, 2), steps = ([2], [2]), maxfactor = (64, 64))
-buf  = allocate_tower(plan, VarAcc{Float64})
-for frame in frames
-    run!(buf, plan, frame)               # 0 bytes allocated
-    var8 = materialize(step_result(buf, plan.output_steps[3]), Var(), Float64)
-end
-```
-
-## Defining your own statistic
-
-Implement an immutable, isbits accumulator and a few methods — no changes to the package:
-
-```julia
-import BlockwiseStatisticalReductions as BSR
-
-struct GeoMeanAcc{T} <: BSR.AbstractAccumulator
-    n::Int
-    logsum::T
-end
-BSR.empty_acc(::Type{GeoMeanAcc{T}}) where {T} = GeoMeanAcc(0, zero(T))
-BSR.lift(::Type{GeoMeanAcc{T}}, x) where {T} = GeoMeanAcc(1, log(T(x)))
-Base.merge(a::GeoMeanAcc, b::GeoMeanAcc) = GeoMeanAcc(a.n + b.n, a.logsum + b.logsum)
-
-struct GeoMean <: BSR.AbstractStatistic end
-BSR.accumulator_type(::GeoMean, ::Type{Tin}) where {Tin} = GeoMeanAcc{BSR.accumulation_eltype(Tin)}
-BSR.result_value(::GeoMean, a::GeoMeanAcc{T}, ::Type{Tout}) where {T,Tout} = Tout(exp(a.logsum / a.n))
-BSR.stat_name(::GeoMean) = :geomean
-
-reduce_stats(data, [4, 8]; stats = (GeoMean(),))    # works at every scale, in any backend
-```
-
-`check_monoid(GeoMeanAcc{Float64})` verifies your accumulator obeys the monoid laws.
-
-## Status
-
-Ground-up rewrite. Core engine (multi-scale blockwise + sliding windows), serial / threaded /
-distributed backends, and a full test suite (`Pkg.test()`) are in place. A GPU
-(KernelAbstractions/CUDA) backend is planned and a Python port may follow.
+A Python implementation of the same idea lives in `python/` at the repository root; it is independent of
+this package.

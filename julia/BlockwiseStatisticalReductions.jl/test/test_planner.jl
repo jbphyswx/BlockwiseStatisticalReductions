@@ -1,79 +1,112 @@
-Random.seed!(4)
+using Test: Test
+using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions as BSR
+using ComputationalBackends: ComputationalBackends as CB
 
-# manual plan executor independent of the package executor (cross-check the DAG itself)
-function run_plan_manual(plan, ::Type{Acc}, data) where {Acc}
-    res = Vector{Array{Acc}}(undef, length(plan.steps))
-    for (i, s) in enumerate(plan.steps)
-        out = allocate_accumulators(Acc, s.shape)
-        s.source == 0 ? blockreduce!(out, (data,), s.window) : coarsen!(out, res[s.source], s.window)
-        res[i] = out
+kinds(p) = map(typeof, p.how)
+requested_hows(p) = [p.how[k] for k in p.outputs]
+
+Test.@testset "planner" begin
+    Test.@testset "divisor chain telescopes into one base pass" begin
+        shape = (256, 256)
+        targets = BSR.resolve([2, 4, 8, 16, 32], shape)
+        p = BSR.plan(shape, targets)
+        BSR.check(p)
+        Test.@test length(BSR.base_nodes(p)) == 1
+        Test.@test BSR.sizes(p.nodes[BSR.base_nodes(p)[1]]) == (2, 2)
+        Test.@test all(h -> h isa BSR.Coarsen, [p.how[k] for k in p.outputs[2:end]])
+        Test.@test BSR.input_passes(p) ≈ 1
+        c = BSR.total_cost(p, 8, 24)
+        Test.@test c.merges < 1.5 * prod(shape)
+        Test.@test length(p.order) == 5 && all(k -> p.buffer[k] > 0, p.order)
+        Test.@test Set(BSR.sizes(p.nodes[k]) for k in p.outputs) == Set([(2, 2), (4, 4), (8, 8), (16, 16), (32, 32)])
     end
-    return res
-end
 
-@testset "planner" begin
-    @testset "lattice helpers" begin
-        @test factor_shape((100, 100), (4, 4)) == (25, 25)
-        @test factor_shape((101, 100), (4, 4)) == (25, 25)
-        @test divides((2, 2), (4, 6)) && !divides((4, 4), (4, 6))
-        @test BSR.factor_window((2, 3), (4, 6)) == (2, 2)
-        @test Set(reachable_factors((1, 1), ([2], [2]), (8, 8))) ==
-              Set([(a, b) for a in (1, 2, 4, 8) for b in (1, 2, 4, 8)])
+    Test.@testset "gcd sharing adds a finer intermediate" begin
+        shape = (360, 360)
+        p = BSR.plan(shape, BSR.resolve([4, 6, 12], shape))
+        BSR.check(p)
+        Test.@test length(BSR.base_nodes(p)) == 1
+        Test.@test BSR.sizes(p.nodes[BSR.base_nodes(p)[1]]) == (2, 2)
+        Test.@test !p.nodes[BSR.base_nodes(p)[1]].requested
+        Test.@test all(h -> h isa BSR.Coarsen, requested_hows(p))
+        Test.@test BSR.input_passes(p) ≈ 1
+        # the cheapest parent of 12 is 6 (or 4), never 2
+        k12 = p.outputs[3]
+        Test.@test BSR.sizes(p.nodes[p.how[k12].parent]) in ((6, 6), (4, 4))
     end
 
-    @testset "plan validity + optimal parent" begin
-        plan = tower_plan((96, 96); base_factor = (2, 2), steps = ([2, 3], [2, 3]), maxfactor = (48, 48))
-        present = Set(s.factor for s in plan.steps)
-        for (i, s) in enumerate(plan.steps)
-            @test s.source < i
-            @test s.shape == factor_shape((96, 96), s.factor)
-            if s.source == 0
-                @test s.window == s.factor
-            else
-                p = plan.steps[s.source]
-                @test divides(p.factor, s.factor) && prod(p.factor) < prod(s.factor)
-                @test s.window == BSR.factor_window(p.factor, s.factor)
-                bp = maximum(prod(q) for q in present if q != s.factor && divides(q, s.factor))
-                @test prod(p.factor) == bp     # largest-divisor (cheapest) parent
-            end
+    Test.@testset "anisotropic and partial targets" begin
+        shape = (100, 64, 10)
+        targets = BSR.resolve([(2, 2, 1), (4, 4, 1), (8, 4, 1), (8, 8, 2)], shape; edge = BSR.Partial())
+        p = BSR.plan(shape, targets)
+        BSR.check(p)
+        Test.@test length(BSR.base_nodes(p)) == 1
+        Test.@test length(p.outputs) == 4
+        # `partial` survives only where a window really is clipped (100 is not a multiple of 8)
+        clipped = p.nodes[p.outputs[3]].window
+        Test.@test clipped[1].partial && !BSR.uniform_length(clipped[1])
+        Test.@test !p.nodes[p.outputs[1]].window[1].partial
+        Test.@test all(k -> BSR.uniform_count(p.nodes[k]) == BSR.uniform_length(p.nodes[k].window), eachindex(p.nodes))
+    end
+
+    Test.@testset "dense sizes share work instead of one pass each" begin
+        # Sharing is measured against the same request planned without composition candidates, and
+        # against one base pass per target; both are computed here rather than pinned to a constant.
+        for (shape, mk, share) in (((512,), s -> (BSR.strided(512, s, 1, BSR.Truncate()),), 0.8),
+                                   ((512, 512), s -> (BSR.strided(512, s, 1, BSR.Truncate()), BSR.strided(512, s, 1, BSR.Truncate())), 0.5))
+            targets = [mk(s) for s in 2:9]
+            p = BSR.plan(shape, targets)
+            BSR.check(p)
+            limits = BSR.kernel_limits(CB.SerialBackend(), length(shape))
+            modelled(q) = sum(BSR.seconds(BSR.cost(q.how[k], q.nodes[k], q.nodes, 8, 24), limits) for k in q.order)
+            planned = modelled(p)
+            allbase = sum(BSR.seconds(BSR.cost(BSR.Base_(), BSR.Node(w, true), p.nodes, 8, 24), limits) for w in targets)
+            Test.@test planned < share * allbase
+            Test.@test planned <= modelled(BSR.plan(shape, targets; chains = false))
+            Test.@test length(BSR.base_nodes(p)) < length(targets)
+            Test.@test any(h -> h isa Union{BSR.Scan,BSR.Compose}, requested_hows(p))
+            Test.@test count(k -> BSR.sizes(p.nodes[k]) == ntuple(_ -> 1, length(shape)), eachindex(p.nodes)) <= 1
         end
     end
 
-    @testset "work bounds and beats naive" begin
-        chain1d = tower_plan((4096,); base_factor = (2,), steps = ([2],), maxfactor = (1024,))
-        @test plan_work(chain1d) < 2 * 4096
-        X = (256, 256)
-        plan = tower_plan(X; base_factor = (1, 1), steps = ([2], [2]), maxfactor = (64, 64))
-        @test n_base_passes(plan) == 1
-        @test plan_work(plan) < naive_work(plan) ÷ 3
+    Test.@testset "base boxes respect the tile limit" begin
+        shape = (1024, 1024)
+        limits = BSR.kernel_limits(CB.SerialBackend(), 2)
+        p = BSR.plan(shape, BSR.resolve([128], shape))
+        BSR.check(p)
+        k = p.outputs[1]
+        Test.@test p.how[k] isa BSR.Coarsen
+        Test.@test prod(BSR.sizes(p.nodes[BSR.base_nodes(p)[1]])) <= limits.max_tile_elements
+        Test.@test BSR.input_passes(p) ≈ 1
     end
 
-    @testset "Steiner sharing optimal on small cases" begin
-        X = (360, 360)
-        M = BSR._augment_steiner(X, [(4, 4), (6, 6)]; cap = 4096)
-        @test (2, 2) in M && total_work(X, M) < total_work(X, [(4, 4), (6, 6)])
-        targets = [(4, 4), (6, 6), (9, 9)]
-        cands = setdiff(BSR.gcd_closure(targets), targets)
-        brute_min = minimum(
-            total_work(X, vcat(targets, [cands[j] for j in 1:length(cands) if (mask >> (j - 1)) & 1 == 1]))
-            for mask in 0:(2^length(cands) - 1))
-        @test total_work(X, BSR._augment_steiner(X, targets; cap = 4096)) == brute_min
+    Test.@testset "anchored and centered windows" begin
+        shape = (100, 40)
+        w = (BSR.anchored(100, 7, [0, 30, 93]), BSR.tiled(40, 5, BSR.Centered()))
+        p = BSR.plan(shape, [w])
+        BSR.check(p)
+        Test.@test p.nodes[p.outputs[1]].window == w
+        Test.@test p.how[p.outputs[1]] isa BSR.Base_
     end
 
-    @testset "end-to-end DAG correctness" begin
-        data = randn(96, 72)
-        plan = tower_plan((96, 72); base_factor = (2, 2), steps = ([2, 3], [2, 3]), maxfactor = (24, 24))
-        res = run_plan_manual(plan, VarAcc{Float64}, data)
-        for (i, s) in enumerate(plan.steps)
-            s.is_output || continue
-            @test vals(Var(), res[i], Float64) ≈ brute(x -> var(x; corrected = true), data, s.factor)
-        end
-        data2 = randn(360, 240)
-        plan2 = solver_plan((360, 240), [(4, 6), (6, 4), (12, 12)]; allow_steiner = true)
-        res2 = run_plan_manual(plan2, VarAcc{Float64}, data2)
-        for (i, s) in enumerate(plan2.steps)
-            s.is_output || continue
-            @test vals(Var(), res2[i], Float64) ≈ brute(x -> var(x; corrected = true), data2, s.factor)
-        end
+    Test.@testset "buffers reuse dead intermediates, never outputs" begin
+        shape = (1024, 1024)
+        p = BSR.plan(shape, BSR.resolve([4, 6, 12, 24], shape))
+        BSR.check(p)
+        Test.@test length(unique(p.buffer[p.outputs])) == length(p.outputs)
+        Test.@test BSR.peak_bytes(p, 24) <= 24 * sum(BSR.cells(n) for n in p.nodes)
+        Test.@test_throws ArgumentError BSR.plan(shape, BSR.resolve([4, 6, 12, 24], shape); memory_limit = 1)
+    end
+
+    Test.@testset "errors and reports" begin
+        shape = (64, 64)
+        Test.@test_throws ArgumentError BSR.plan(shape, BSR.Window{2}[])
+        Test.@test_throws DimensionMismatch BSR.plan(shape, BSR.resolve([4], (32, 32)))
+        p = BSR.plan(shape, BSR.resolve([4, 8], shape))
+        s = sprint(io -> BSR.explain(io, p))
+        Test.@test occursin("2 requested", s) && occursin("base pass", s) && occursin("input passes", s)
+        d = BSR.dot(p)
+        Test.@test occursin("digraph", d) && count("->", d) == length(p.nodes)
+        Test.@test_throws ArgumentError BSR.plan(shape, BSR.resolve([4], shape); backend = CB.MPIBackend())
     end
 end

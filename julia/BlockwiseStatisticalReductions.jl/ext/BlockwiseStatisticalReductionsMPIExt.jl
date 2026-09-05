@@ -1,78 +1,140 @@
 module BlockwiseStatisticalReductionsMPIExt
 
-# Distributed execution across MPI ranks (`MPIBackend{Inner}`). SPMD: every rank calls the same
-# `reduce_stats(...; backend = MPIBackend(inner))` on the (full) input and ends up with the full
-# result. Work is split over DISJOINT slabs of OUTPUT cells along the last dimension: because
-# non-overlapping blockwise cells partition the input cleanly, each rank reduces its own cells with
-# no cross-rank merge, then the per-rank accumulator slabs are combined with `Allgatherv!` (the
-# accumulators are isbits, so `MPI.Datatype` is derived automatically). Coarsening runs locally on
-# every rank from the gathered base result — exactly as the Distributed backend does. Each rank runs
-# the given `inner` local backend (serial/threaded/GPU) on its slab, so `MPIBackend{ThreadedBackend}`
-# etc. compose (MPI across nodes, threads within).
-#
-# Note: this v1 divides COMPUTE (all ranks hold the full input). Scattering the input to divide
-# MEMORY across ranks is a compatible refinement (output-cell-aligned slabs need no halo).
+# SPMD requests over a tensor no rank holds whole. Every rank owns a contiguous slab along one axis and
+# the windows whose first cell falls in it, so a window only ever reaches forward and one halo, on one
+# side, is enough. What travels is raw input cells rather than accumulators: an accumulator is wider than
+# an input element, and the cells a straddling window is missing are the same cells either way.
 
 using MPI: MPI
+using ComputationalBackends: ComputationalBackends as CB
 using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions as BSR
 
-# Contiguous near-equal cell counts for `n` cells over `k` ranks.
-function _rank_counts(n::Int, k::Int)
-    base, rem = divrem(n, k)
-    return Int[base + (i <= rem ? 1 : 0) for i in 1:k]
-end
-# 1-based cell range owned by 0-based `rank`, given per-rank `counts`.
-function _rank_range(counts::Vector{Int}, rank::Int)
-    off = 0
-    for r in 0:(rank - 1)
-        off += counts[r + 1]
-    end
-    return (off + 1):(off + counts[rank + 1])
+_comm(b::CB.AbstractMPIBackend) = b.comm === nothing ? MPI.COMM_WORLD : b.comm
+
+# One peer's share of the halo: which cells along the partitioned axis, and a contiguous buffer per
+# travelling field. Ranges are already local — into the sender's slab, or into the receiver's staging.
+struct Peer{B<:Tuple}
+    rank::Int
+    range::UnitRange{Int}
+    buffers::B
 end
 
-function _mpi_base!(out::Array{Acc,N}, inputs::Tuple, window::NTuple{N,Int},
-                    inner::BSR.AbstractExecutionBackend, comm, nr::Int, rank::Int) where {Acc,N}
-    sd = N                                    # last dim: contiguous slabs on a column-major array
-    ncell = size(out, sd)
-    if nr == 1 || ncell < nr
-        # Fewer output cells than ranks (or serial): every rank has the full input, so just compute
-        # the whole node locally (identical on all ranks) — cheap, and keeps the result complete.
-        BSR.blockreduce!(out, inputs, window, inner)
-        return out
-    end
-    counts = _rank_counts(ncell, nr)
-    myr = _rank_range(counts, rank)
-    dlo = (first(myr) - 1) * window[sd] + 1
-    dhi = last(myr) * window[sd]
-    islab = map(a -> view(a, ntuple(d -> d == sd ? (dlo:dhi) : Colon(), Val(N))...), inputs)
-    oshape = ntuple(d -> d == sd ? length(myr) : size(out, d), Val(N))
-    myout = BSR.blockreduce!(BSR.allocate_accumulators(Acc, oshape), islab, window, inner)
-    # Gather the contiguous per-rank slabs into `out` (last-dim slabs ↔ contiguous linear chunks).
-    cellsz = prod(ntuple(d -> d == sd ? 1 : size(out, d), Val(N)))
-    recvcounts = counts .* cellsz
-    MPI.Allgatherv!(vec(myout), MPI.VBuffer(vec(out), recvcounts), comm)
-    return out
+"The halo one rank exchanges: what it sends, what it receives, and the part it already holds itself."
+struct Exchange{B<:Tuple}
+    comm::MPI.Comm
+    axis::Int
+    stage::B
+    sends::Vector{Peer{B}}
+    recvs::Vector{Peer{B}}
+    from::UnitRange{Int}
+    into::UnitRange{Int}
 end
 
-function BSR.run!(buf::BSR.TowerBuffers{Acc,N}, plan::BSR.ReductionPlan{N}, inputs::Tuple,
-                 backend::BSR.MPIBackend) where {Acc,N}
-    @boundscheck length(buf.arrays) == length(plan.steps) ||
-        throw(DimensionMismatch("buffers do not match plan"))
-    MPI.Initialized() || MPI.Init()
-    comm = MPI.COMM_WORLD
-    nr = MPI.Comm_size(comm)
-    rank = MPI.Comm_rank(comm)
-    inner = BSR.local_backend(backend)
-    for i in eachindex(plan.steps)
-        s = plan.steps[i]
-        out = buf.arrays[i]
-        if s.source == 0
-            _mpi_base!(out, inputs, s.window, inner, comm, nr, rank)
-        else
-            BSR.coarsen!(out, buf.arrays[s.source], s.window, inner)   # local; parent is full on every rank
-        end
-    end
-    return buf
+struct MPIPrepared{S<:BSR.SlabRequest,X<:Exchange,W}
+    request::S
+    exchange::X
+    weights::W
+    slab::BSR.Slab
 end
 
-end # module
+BSR.explain(io::IO, mp::MPIPrepared; kw...) = BSR.explain(io, mp.request.interior; kw...)
+"The windows this rank owns, in global coordinates."
+BSR.windows(mp::MPIPrepared) = BSR.windows(mp.request.result)
+
+_buffers(fields::Tuple, axis::Int, len::Int) = map(f -> BSR.axis_similar(f, axis, len), fields)
+
+# Fields that travel: the data, plus per-element weights, which are partitioned like the data. Per-axis
+# weight factors index the global axis instead, so every rank slices its own share out of the same vector.
+_travelling(fields::Tuple, weights::AbstractArray) = (fields..., weights)
+_travelling(fields::Tuple, weights) = fields
+
+_slice_weights(w::AbstractArray, axis, r, N, dimnames) = w
+_slice_weights(::Nothing, axis, r, N, dimnames) = nothing
+function _slice_weights(w::Union{Tuple,NamedTuple}, axis, r, ::Val{N}, dimnames) where {N}
+    f = BSR.weight_factors(w, Val(N), dimnames)
+    return ntuple(d -> d == axis ? (f[d] === nothing ? nothing : f[d][r]) : f[d], Val(N))
+end
+
+function BSR.prepare_partitioned(pf::BSR.Partitioned, scales, backend::CB.AbstractMPIBackend;
+                                 weights = nothing, dimnames = nothing, spacing = nothing,
+                                 edge::BSR.EdgePolicy = BSR.Truncate(), kw...)
+    MPI.Initialized() ||
+        throw(ArgumentError("MPI is not initialized; call MPI.Init() before preparing a partitioned request"))
+    comm = _comm(backend)
+    axis = pf.axis
+    fields = BSR._fieldtuple(pf.fields)
+    BSR._check_fields(fields)
+    local_shape = size(fields[1])
+    N = length(local_shape)
+    axis <= N || throw(ArgumentError("partition axis $axis for a $N-dimensional field"))
+    BSR._check_dimnames(dimnames, N)
+
+    extents = MPI.Allgather(local_shape[axis], comm)
+    me = MPI.Comm_rank(comm) + 1
+    offsets = [sum(view(extents, 1:r-1)) for r in eachindex(extents)]
+    global_shape = ntuple(d -> d == axis ? sum(extents) : local_shape[d], N)
+    slab = BSR.Slab(axis, offsets[me], extents[me], global_shape[axis])
+    targets = BSR.resolve(scales, global_shape; edge = edge, dimnames = dimnames, spacing = spacing)
+    part = BSR.partition(targets, slab)
+
+    # Every rank publishes the cells its boundary windows read, so each also knows what to send.
+    los = MPI.Allgather(first(part.staging), comm)
+    his = MPI.Allgather(last(part.staging) + 1, comm)
+    mine = (offsets[me] + 1):(offsets[me] + extents[me])
+    travel = _travelling(fields, weights)
+    stage = _buffers(travel, axis, length(part.staging))
+
+    recvs = Peer{typeof(stage)}[]
+    sends = Peer{typeof(stage)}[]
+    for r in eachindex(extents)
+        r == me && continue
+        theirs = (offsets[r] + 1):(offsets[r] + extents[r])
+        got = intersect((los[me] + 1):his[me], theirs)
+        isempty(got) || push!(recvs, Peer(r - 1, got .- los[me], _buffers(travel, axis, length(got))))
+        give = intersect((los[r] + 1):his[r], mine)
+        isempty(give) || push!(sends, Peer(r - 1, give .- offsets[me], _buffers(travel, axis, length(give))))
+    end
+    held = intersect((los[me] + 1):his[me], mine)
+    exchange = Exchange(comm, axis, stage, sends, recvs, held .- offsets[me], held .- los[me])
+
+    staged = (los[me] + 1):his[me]
+    staging_fields = BSR.like_fields(pf.fields, ntuple(k -> stage[k], length(fields)))
+    request = BSR.slab_request(part, pf.fields, staging_fields, slab, global_shape;
+                               weights = _slice_weights(weights, axis, mine, Val(N), dimnames),
+                               stageweights = weights isa AbstractArray ? stage[end] :
+                                              _slice_weights(weights, axis, staged, Val(N), dimnames),
+                               dimnames = dimnames, spacing = spacing, edge = edge, kw...)
+    return MPIPrepared(request, exchange, weights, slab)
+end
+
+# The inner plans check the shape and the field count; the exchange only needs the fields to line up with
+# the buffers it was built for.
+function BSR.blockstats!(mp::MPIPrepared, fields)
+    travel = _travelling(BSR._fieldtuple(fields), mp.weights)
+    length(travel) == length(mp.exchange.stage) ||
+        throw(ArgumentError("$(length(travel)) field(s) given for a request prepared with $(length(mp.exchange.stage))"))
+    _exchange!(mp.exchange, travel)
+    return BSR.run_slab!(mp.request, fields)
+end
+BSR.blockstats!(mp::MPIPrepared, pf::BSR.Partitioned) = BSR.blockstats!(mp, pf.fields)
+
+function _exchange!(x::Exchange, travel::Tuple)
+    reqs = MPI.Request[]
+    for p in x.recvs, (k, b) in enumerate(p.buffers)
+        push!(reqs, MPI.Irecv!(b, x.comm; source = p.rank, tag = k))
+    end
+    for p in x.sends, (k, b) in enumerate(p.buffers)
+        copyto!(b, BSR.axis_slice(travel[k], x.axis, p.range))
+        push!(reqs, MPI.Isend(b, x.comm; dest = p.rank, tag = k))
+    end
+    for (k, f) in enumerate(travel)
+        copyto!(BSR.axis_slice(x.stage[k], x.axis, x.into), BSR.axis_slice(f, x.axis, x.from))
+    end
+    MPI.Waitall(reqs)
+    for p in x.recvs, (k, b) in enumerate(p.buffers)
+        copyto!(BSR.axis_slice(x.stage[k], x.axis, p.range), b)
+    end
+    return nothing
+end
+
+end

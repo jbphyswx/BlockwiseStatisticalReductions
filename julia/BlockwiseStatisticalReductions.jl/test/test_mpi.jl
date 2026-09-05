@@ -1,11 +1,14 @@
-using MPI: MPI
+using Test: Test
+using MPI: MPI, mpiexec
 
-# The MPI backend is SPMD, so it is tested by launching `mpi_parity.jl` under `mpiexec` with 2 ranks
-# (MPI.jl bundles its own `mpiexec`) and asserting the run succeeds — the sub-process checks that the
-# MPI result is bit-identical to serial and exits nonzero otherwise.
-@testset "mpi (2 ranks via mpiexec)" begin
+# The MPI backend can only be exercised across processes. Two ranks cover a halo that reaches the next
+# slab; three cover one that reaches past it, into a rank that is not a neighbour.
+Test.@testset "mpi" begin
     script = joinpath(@__DIR__, "mpi_parity.jl")
-    proj = Base.active_project()
-    cmd = `$(MPI.mpiexec()) -n 2 $(Base.julia_cmd()[1]) --project=$proj $script`
-    @test success(run(ignorestatus(cmd)))
+    project = Base.active_project()
+    for n in (2, 3)
+        Test.@testset "$n ranks" begin
+            Test.@test success(mpiexec(cmd -> run(`$cmd -n $n $(Base.julia_cmd()) --project=$project $script`)))
+        end
+    end
 end

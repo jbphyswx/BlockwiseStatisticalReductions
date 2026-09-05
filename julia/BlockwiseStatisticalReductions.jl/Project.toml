@@ -4,27 +4,43 @@ version = "0.1.0"
 authors = ["Jordan Benjamin"]
 
 [deps]
+Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
+ComputationalBackends = "5c6e2104-4040-447f-8fc0-66ec2223b019"
+
+[sources]
+ComputationalBackends = {url = "https://github.com/jbphyswx/ComputationalBackends.jl"}
 
 [weakdeps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
 Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
+NCDatasets = "85f8d34a-cbdd-5861-8df4-14fed0d494ab"
 OhMyThreads = "67456a42-1dca-4109-a031-0a68de7e3ad5"
+Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 
 [extensions]
 BlockwiseStatisticalReductionsCUDAExt = ["KernelAbstractions", "CUDA"]
+BlockwiseStatisticalReductionsDimensionalDataExt = "DimensionalData"
 BlockwiseStatisticalReductionsDistributedExt = "Distributed"
 BlockwiseStatisticalReductionsKernelAbstractionsExt = "KernelAbstractions"
 BlockwiseStatisticalReductionsMPIExt = "MPI"
+BlockwiseStatisticalReductionsNCDatasetsExt = "NCDatasets"
 BlockwiseStatisticalReductionsOhMyThreadsExt = "OhMyThreads"
+BlockwiseStatisticalReductionsZarrExt = "Zarr"
 
 [compat]
+Adapt = "4"
 CUDA = "5, 6"
+ComputationalBackends = "0.1"
+DimensionalData = "0.30"
 Distributed = "1"
 KernelAbstractions = "0.9"
 MPI = "0.20"
-OhMyThreads = "0.7, 0.8"
+NCDatasets = "0.14"
+OhMyThreads = "0.8"
+Zarr = "0.9, 0.10"
 julia = "1.11"
 
 [workspace]

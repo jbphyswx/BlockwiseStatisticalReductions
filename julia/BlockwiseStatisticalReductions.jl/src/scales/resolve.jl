@@ -57,6 +57,26 @@ end
 resolve(ws::AbstractVector{<:Tuple{AxisWindow,Vararg{AxisWindow}}}, shape::NTuple{N,Int}; kw...) where {N} =
     unique!(reduce(vcat, (resolve(w, shape) for w in ws); init = Window{N}[]))
 
+"""
+    Resolved(windows)
+
+Target windows worked out by the caller. [`resolve`](@ref) returns them in the given order and keeps
+every one of them, so a caller that has to line its windows up with something else keeps its own
+ordering. The windows must be distinct, since a plan produces each of its targets once.
+"""
+struct Resolved{W<:AbstractVector}
+    windows::W
+end
+function resolve(r::Resolved, shape::NTuple{N,Int}; kw...) where {N}
+    for w in r.windows
+        length(w) == N || throw(DimensionMismatch("window with $(length(w)) axes for $N axes"))
+        map(aw -> aw.extent, w) == shape ||
+            throw(DimensionMismatch("window extents $(map(aw -> aw.extent, w)) do not match shape $shape"))
+    end
+    allunique(map(canonicalize, w) for w in r.windows) || throw(ArgumentError("resolved targets must be distinct"))
+    return Window{N}[w for w in r.windows]
+end
+
 # ── Per-axis generators ──────────────────────────────────────────────────────────
 
 _generator(g::SizeGenerator) = g

@@ -50,6 +50,11 @@ _fieldnames(f::Tuple) = ntuple(i -> Symbol(:f, i), length(f))
 _fieldtuple(f::AbstractArray) = (f,)
 _fieldtuple(f::NamedTuple) = values(f)
 _fieldtuple(f::Tuple) = f
+# Other arrays standing in for the same fields, in the container `fields` came in — a statistic bound to
+# a name has to find that name again.
+like_fields(::AbstractArray, new::Tuple) = only(new)
+like_fields(f::NamedTuple, new::Tuple) = NamedTuple{keys(f)}(new)
+like_fields(::Tuple, new::Tuple) = new
 
 function _check_fields(fields::Tuple)
     isempty(fields) && throw(ArgumentError("at least one input field is required"))
@@ -80,11 +85,14 @@ keyed by `dimnames`, whose product is formed per element. A statistic with no we
 
 `skipnan = true` drops non-finite observations: each statistic sees only the elements whose own bound
 fields are all finite, and the counts and total weights reflect that.
+
+`into` writes the results into arrays the caller already holds — one `NamedTuple` of arrays per requested
+window, shaped and named like the ones `prepare` would otherwise allocate — instead of allocating them.
 """
 function prepare(fields, scales; stats::Union{Tuple,NamedTuple}, edge::EdgePolicy = Truncate(),
                  backend::CB.AbstractExecutionBackend = CB.AutoBackend(), acc_eltype = nothing,
                  out_eltype = nothing, shift = :auto, dimnames = nothing, spacing = nothing,
-                 weights = nothing, skipnan::Bool = false, memory_limit::Int = typemax(Int))
+                 weights = nothing, skipnan::Bool = false, into = nothing, memory_limit::Int = typemax(Int))
     fs = _fieldtuple(fields)
     _check_fields(fs)
     names = _fieldnames(fields)
@@ -113,7 +121,7 @@ function prepare(fields, scales; stats::Union{Tuple,NamedTuple}, edge::EdgePolic
     p = plan(shape, targets; backend = bk, in_bytes, acc_bytes = sizeof(C), memory_limit)
     ws = allocate(p, C, fs[1]; uniform_counts = !skipnan)
     eltypes = out_eltype === nothing ? outs : ntuple(_ -> out_eltype, length(stats))
-    result = _allocate_results(p, targets, fs[1], statnames, eltypes, dimnames, spacing)
+    result = _allocate_results(p, targets, fs[1], statnames, eltypes, dimnames, spacing, into)
     sh = _shift_state(shift, shifting, Tin, length(_bound_fields(C)))
     tags = values(stats)
     finalizers = _finalize_steps(p, ws, result, tags, routing, C, names)
@@ -144,13 +152,24 @@ function weight_source(w::Tuple, shape::Dims{N}, dimnames) where {N}
     end
     return SeparableWeights(w, shape)
 end
-function weight_source(w::NamedTuple, shape::Dims{N}, dimnames) where {N}
+weight_source(w::NamedTuple, shape::Dims{N}, dimnames) where {N} =
+    weight_source(weight_factors(w, Val(N), dimnames), shape, dimnames)
+
+"""
+    weight_factors(weights, ::Val{N}, dimnames) -> NTuple{N,Any}
+
+Per-axis weight factors as one entry per axis, `nothing` where an axis has none. A `NamedTuple` is
+matched to `dimnames`; a tuple is already in that form.
+"""
+function weight_factors(w::NamedTuple, ::Val{N}, dimnames) where {N}
     dimnames === nothing && throw(ArgumentError("weight factors named $(keys(w)) need `dimnames`"))
     for k in keys(w)
         k in dimnames || throw(ArgumentError("unknown axis $k in weights; axes are $dimnames"))
     end
-    return weight_source(ntuple(d -> get(w, dimnames[d], nothing), Val(N)), shape, dimnames)
+    return ntuple(d -> get(w, dimnames[d], nothing), Val(N))
 end
+weight_factors(w::Tuple, ::Val{N}, dimnames) where {N} =
+    (length(w) == N || throw(ArgumentError("$(length(w)) weight factor(s) for $N axes")); w)
 
 # Bytes of raw input one observation reads: only the fields the composite actually binds.
 _in_bytes(::Type{C}, fs::Tuple) where {C} = sum(i -> _read_bytes(fs[i]), _bound_fields(C); init = 0)
@@ -169,9 +188,26 @@ _bound_fields(::Type{Composite{M,B}}) where {M,B} = sort!(unique!(collect(Iterat
 end
 
 function _allocate_results(p::Plan{N}, targets, proto::AbstractArray, statnames::Tuple, eltypes::Tuple,
-                           dimnames, spacing) where {N}
-    results = [NamedTuple{statnames}(ntuple(k -> similar(proto, eltypes[k], shape(w)), length(statnames))) for w in targets]
+                           dimnames, spacing, into) where {N}
+    results = into === nothing ?
+        [NamedTuple{statnames}(ntuple(k -> similar(proto, eltypes[k], shape(w)), length(statnames))) for w in targets] :
+        _check_into(into, targets, statnames, eltypes)
     return ScaleResults(p.input_shape, collect(targets), results, p, statnames, dimnames, spacing)
+end
+
+function _check_into(into, targets, statnames::Tuple, eltypes::Tuple)
+    length(into) == length(targets) ||
+        throw(ArgumentError("$(length(into)) result group(s) for $(length(targets)) requested window(s)"))
+    for (nt, w) in zip(into, targets)
+        keys(nt) == statnames || throw(ArgumentError("result names $(keys(nt)) do not match the request's $statnames"))
+        for (k, name) in enumerate(statnames)
+            size(nt[name]) == shape(w) ||
+                throw(DimensionMismatch("result $name of size $(size(nt[name])) for a window of shape $(shape(w))"))
+            eltype(nt[name]) === eltypes[k] ||
+                throw(ArgumentError("result $name has eltype $(eltype(nt[name])), not $(eltypes[k])"))
+        end
+    end
+    return collect(into)
 end
 
 _check_dimnames(::Nothing, N::Int) = nothing

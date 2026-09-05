@@ -13,6 +13,8 @@ Test.@testset "BlockwiseStatisticalReductions" begin
     include("test_threaded.jl")
     include("test_gpu.jl")
     include("test_weights.jl")
+    include("test_partition.jl")
     include("test_labeled.jl")
     include("test_io.jl")
+    include("test_mpi.jl")
 end

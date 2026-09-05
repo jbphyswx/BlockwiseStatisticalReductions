@@ -35,7 +35,10 @@ function _derivations_from(s::_Search{N}, q::Int, i::Int, M::Vector{Int}, keys::
     out = Derivation[]
     pw, cw = s.nodes[q].window, s.nodes[i].window
     if all(a -> can_coarsen(pw[a], cw[a]), 1:N)
-        push!(out, Coarsen{N}(q, ntuple(a -> cw[a].size ÷ pw[a].size, Val(N))))
+        k = ntuple(a -> cw[a].size ÷ pw[a].size, Val(N))
+        # The kernel writes the whole coarsened grid, so the child has to be it; a child holding only some
+        # of its windows is reached by coarsening to the full grid and restriding onto the subset.
+        all(a -> canonicalize(coarsen_result(pw[a], k[a])) == canonicalize(cw[a]), 1:N) && push!(out, Coarsen{N}(q, k))
     end
     if pw != cw && all(a -> can_restride(pw[a], cw[a]), 1:N)
         push!(out, Restride{N}(q, ntuple(a -> index_map(pw[a].pos, cw[a].pos, 0), Val(N))))

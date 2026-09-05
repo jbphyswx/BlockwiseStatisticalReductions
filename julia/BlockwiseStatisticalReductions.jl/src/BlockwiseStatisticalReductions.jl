@@ -12,6 +12,7 @@ include("storage/accumulator_array.jl")
 
 include("geometry/window.jl")
 include("geometry/coordinates.jl")
+include("geometry/partition.jl")
 
 include("scales/spec.jl")
 include("scales/resolve.jl")
@@ -32,6 +33,7 @@ include("execute/run.jl")
 
 include("api/results.jl")
 include("api/blockstats.jl")
+include("api/partitioned.jl")
 include("api/show.jl")
 
 export blockstats, blockstats!, prepare, explain
@@ -41,5 +43,6 @@ export Count, Sum, Mean, Var, Std, CentralMoments, Skewness, Kurtosis, Moments, 
 export ScaleSet, Sizes, Dyadic, Smooth, Every, Divisors, Fixed, Subsample, Length
 export Tiled, Stride, Overlap, Dense, Anchors, Spread, Isotropic, Product, Zip
 export Truncate, Partial, Centered, Strict, Regular, Edges, spacing_from_points
+export Partitioned
 
 end

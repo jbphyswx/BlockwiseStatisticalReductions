@@ -38,6 +38,14 @@ _neutral_expr(M, B) = _inline_composite(M, B, _member_exprs(M, (k, Mk) -> :(neut
 _lift_expr(M, B) = _inline_composite(M, B, _member_exprs(M, (k, Mk) -> :(lift($Mk, ($(map(j -> :(xs[$j]), B[k])...),)))))
 _merge_expr(M, B) = _inline_composite(M, B, _member_exprs(M, (k, Mk) -> :(merge(a.members[$k], b.members[$k]))))
 _unmerge_expr(M, B) = _inline_composite(M, B, _member_exprs(M, (k, Mk) -> :(unmerge(ab.members[$k], b.members[$k]))))
+function _lift_skipping_expr(M, B)
+    exprs = Any[]
+    for k in 1:fieldcount(M)
+        vals = Expr(:tuple, [:(xs[$j]) for j in B[k]]...)
+        push!(exprs, :(lift_skipping($(fieldtype(M, k)), $vals)))
+    end
+    return _inline_composite(M, B, exprs)
+end
 _p1init_expr(M) = _inline_tuple(_member_exprs(M, (k, Mk) -> :(p1init($Mk))))
 _p1lift_expr(M) = _inline_tuple(_member_exprs(M, (k, Mk) -> :(p1lift($Mk, c.members[$k]))))
 _p1merge_expr(M) = _inline_tuple(_member_exprs(M, (k, Mk) -> :(p1merge($Mk, s[$k], t[$k]))))
@@ -78,6 +86,7 @@ _unshift_expr(M, B) = _inline_composite(M, B, _member_exprs(M, (k, Mk) -> :(unsh
 
 @generated neutral(::Type{Composite{M,B}}) where {M,B} = _neutral_expr(M, B)
 @generated lift(::Type{Composite{M,B}}, xs::Tuple) where {M,B} = _lift_expr(M, B)
+@generated lift_skipping(::Type{Composite{M,B}}, xs::Tuple) where {M,B} = _lift_skipping_expr(M, B)
 @generated Base.merge(a::Composite{M,B}, b::Composite{M,B}) where {M,B} = _merge_expr(M, B)
 @generated unmerge(ab::Composite{M,B}, b::Composite{M,B}) where {M,B} = _unmerge_expr(M, B)
 @generated phases(::Type{Composite{M,B}}) where {M,B} = isempty(_phase2_members(M)) ? 1 : 2
@@ -107,14 +116,20 @@ end
 resolve_bindings(tag::AbstractStatistic, fieldnames::Tuple) = map(f -> _field_index(f, fieldnames), bindings(tag))
 
 """
-    assemble(stats::Tuple, fieldnames::Tuple, ::Type{Tin}, ::Type{Tacc})
+    assemble(stats, fieldnames::Tuple, ::Type{Tin}, ::Type{Tacc})
         -> (CompositeType, routing::Tuple{Vararg{Val}}, names::Tuple{Vararg{Symbol}}, result_eltypes::Tuple)
 
 Composite accumulator type serving every tag in `stats` over input fields `fieldnames`, with each tag
 routed (by `Val` member index) to the member that finalizes it. Members with identical bindings that
-another member subsumes are dropped.
+another member subsumes are dropped. A `NamedTuple` of tags takes its result names from the keys, a
+`Tuple` from each tag's own [`name`](@ref).
 """
-function assemble(stats::Tuple, fieldnames::Tuple, ::Type{Tin}, ::Type{Tacc}) where {Tin,Tacc}
+assemble(stats::Tuple, fieldnames::Tuple, ::Type{Tin}, ::Type{Tacc}) where {Tin,Tacc} =
+    _assemble(stats, map(name, stats), fieldnames, Tin, Tacc)
+assemble(stats::NamedTuple, fieldnames::Tuple, ::Type{Tin}, ::Type{Tacc}) where {Tin,Tacc} =
+    _assemble(values(stats), keys(stats), fieldnames, Tin, Tacc)
+
+function _assemble(stats::Tuple, names::Tuple, fieldnames::Tuple, ::Type{Tin}, ::Type{Tacc}) where {Tin,Tacc}
     isempty(stats) && throw(ArgumentError("at least one statistic is required"))
     natural = map(s -> accumulator_type(s, Tin, Tacc), stats)
     bound = map(s -> resolve_bindings(s, fieldnames), stats)
@@ -126,7 +141,6 @@ function assemble(stats::Tuple, fieldnames::Tuple, ::Type{Tin}, ::Type{Tacc}) wh
     M = Tuple{(p[1] for p in kept)...}
     B = Tuple(p[2] for p in kept)
     routing = ntuple(k -> Val(_member_for(natural[k], bound[k], kept)), length(stats))
-    names = map(name, stats)
     allunique(names) || throw(ArgumentError("duplicate result names $(names); pass stats as a NamedTuple to name them"))
     outs = map(s -> result_eltype(s, Tin), stats)
     return Composite{M,B}, routing, names, outs

@@ -25,7 +25,7 @@ function base_gate(stats, sizes, T, threshold; label, nfields = 1)
         C, _, _, _ = BSR.assemble(stats, names, T, Tacc)
         out = BSR.AccumulatorArray(C, fields[1], BSR.shape(w); uniform = (n = prod(sizes),))
         raw = NamedTuple{names}(fields)
-        src = shifted ? NamedTuple{names}(map(f -> BSR.Shifted(f, BSR.field_shift(f, T)), fields)) : raw
+        src = shifted ? NamedTuple{names}(map(f -> BSR.Shifted(f, BSR.field_shift(f, T, SERIAL)), fields)) : raw
         BSR.boxfold!(out, src, w, SERIAL)
         t = best(() -> BSR.boxfold!(out, src, w, SERIAL))
         base = shifted ? sum(f -> (sum(T, f); best(() -> sum(T, f))), fields) : sum(roofline64, fields)

@@ -22,6 +22,15 @@ BSR.gpu_backend(fields::Tuple) = CB.GPUBackend(KA.get_backend(fields[1]))
 
 @inline _device(b::CB.AbstractGPUBackend) = b.backend
 
+# Device arrays do not index on the host, so the shift's strided sample is summed on the device.
+function BSR.field_shift(field::AbstractArray, ::Type{T}, ::CB.AbstractGPUBackend) where {T}
+    n = length(field)
+    n == 0 && return zero(T)
+    sample = view(vec(field), BSR.shift_sample(n))
+    m = sum(sample) / length(sample)
+    return isfinite(m) ? T(m) : zero(T)
+end
+
 # ── Kernels ──────────────────────────────────────────────────────────────────────
 
 @kernel function _boxfold_kernel!(out, src, w, ::Val{S}) where {S}

@@ -5,25 +5,86 @@ An input field read as `field[J] - shift`. Accumulating shifted observations kee
 every difference the moment kernels take, so the accumulation eltype only has to resolve the spread of
 the data rather than its offset. [`unshift`](@ref) puts the offset back at finalize.
 """
-struct Shifted{A<:AbstractArray,S}
+struct Shifted{A,S}
     field::A
     shift::S
 end
 Adapt.adapt_structure(to, f::Shifted) = Shifted(Adapt.adapt(to, f.field), f.shift)
 
+"""
+    WeightSource
+
+An input field of observation weights. A weight is a field in its own right so that the kernels read it
+through the same path as the data, and its own type so that a shift is never subtracted from it.
+"""
+abstract type WeightSource end
+
+"Weights given one per input element."
+struct ElementWeights{A<:AbstractArray} <: WeightSource
+    w::A
+end
+Adapt.adapt_structure(to, f::ElementWeights) = ElementWeights(Adapt.adapt(to, f.w))
+Base.size(f::ElementWeights) = size(f.w)
+Base.eltype(::Type{ElementWeights{A}}) where {A} = eltype(A)
+
+"""
+    SeparableWeights(factors, dims)
+
+Weights that are the product of one factor per axis over an input of shape `dims`; `nothing` in place of
+a factor leaves that axis out of the product. The product is formed per element, so an N-D weight array
+is never materialized.
+"""
+struct SeparableWeights{V<:Tuple,N,T} <: WeightSource
+    factors::V
+    dims::NTuple{N,Int}
+end
+function SeparableWeights(factors::Tuple, dims::NTuple{N,Int}) where {N}
+    any(!isnothing, factors) || throw(ArgumentError("separable weights need at least one axis factor"))
+    T = promote_type(map(v -> v === nothing ? Bool : eltype(v), factors)...)
+    return SeparableWeights{typeof(factors),N,T}(factors, dims)
+end
+Adapt.adapt_structure(to, f::SeparableWeights) = SeparableWeights(map(v -> Adapt.adapt(to, v), f.factors), f.dims)
+Base.size(f::SeparableWeights) = f.dims
+Base.eltype(::Type{<:SeparableWeights{V,N,T}}) where {V,N,T} = T
+
 @inline value(f::AbstractArray, J::CartesianIndex) = @inbounds f[J]
-@inline value(f::Shifted, J::CartesianIndex) = (@inbounds f.field[J]) - f.shift
+@inline value(f::Shifted, J::CartesianIndex) = value(f.field, J) - f.shift
+@inline value(f::ElementWeights, J::CartesianIndex) = @inbounds f.w[J]
+@generated function value(f::SeparableWeights{V}, J::CartesianIndex) where {V}
+    terms = [:(@inbounds f.factors[$d][J[$d]]) for d in 1:fieldcount(V) if fieldtype(V, d) !== Nothing]
+    ex = terms[1]
+    for t in terms[2:end]
+        ex = :($ex * $t)
+    end
+    return quote
+        Base.@_inline_meta
+        $ex
+    end
+end
 Base.size(f::Shifted) = size(f.field)
 Base.eltype(::Type{Shifted{A,S}}) where {A,S} = promote_type(eltype(A), S)
 
-"Raw input fields read at an index and lifted into accumulators of type `A`."
-struct Lift{A<:AbstractAccumulator,F<:Tuple}
+"""
+    Skipping(fields)
+
+Input fields whose non-finite observations contribute nothing: a leaf lifts to `neutral` for every
+accumulator whose own bound values are not all finite, so one field's gaps do not drop the others.
+"""
+struct Skipping{F<:Tuple}
     fields::F
 end
-Lift{A}(fields::F) where {A,F<:Tuple} = Lift{A,F}(fields)
-Adapt.adapt_structure(to, l::Lift{A}) where {A} = Lift{A}(map(f -> Adapt.adapt(to, f), l.fields))
+Adapt.adapt_structure(to, s::Skipping) = Skipping(map(f -> Adapt.adapt(to, f), s.fields))
 
-@inline leaf(src::Lift{A}, J::CartesianIndex) where {A} = lift(A, map(f -> value(f, J), src.fields))
+"Raw input fields read at an index and lifted into accumulators of type `A`; `Skip` drops non-finite observations."
+struct Lift{A<:AbstractAccumulator,F<:Tuple,Skip}
+    fields::F
+end
+Lift{A}(fields::F) where {A,F<:Tuple} = Lift{A,F,false}(fields)
+Adapt.adapt_structure(to, l::Lift{A,F,Skip}) where {A,F,Skip} =
+    (g = map(f -> Adapt.adapt(to, f), l.fields); Lift{A,typeof(g),Skip}(g))
+
+@inline leaf(src::Lift{A,F,false}, J::CartesianIndex) where {A,F} = lift(A, map(f -> value(f, J), src.fields))
+@inline leaf(src::Lift{A,F,true}, J::CartesianIndex) where {A,F} = lift_skipping(A, map(f -> value(f, J), src.fields))
 @inline leaf(src::AccumulatorArray, J::CartesianIndex) = @inbounds src[J]
 
 "`L` consecutive indices from `start`; the length is part of the type so box loops unroll."
@@ -53,7 +114,7 @@ struct Box{S,N,R<:Tuple}
 end
 Base.IteratorSize(::Type{<:Box}) = Base.HasLength()
 Base.length(b::Box) = prod(length, b.ranges)
-Base.eltype(::Type{Box{Lift{A,F},N,R}}) where {A,F,N,R} = A
+Base.eltype(::Type{Box{Lift{A,F,Skip},N,R}}) where {A,F,Skip,N,R} = A
 Base.eltype(::Type{Box{S,N,R}}) where {A,S<:AccumulatorArray{A},N,R} = A
 _indices(b::Box) = CartesianIndices(map(_dynamic, b.ranges))
 @inline function Base.iterate(b::Box, state = nothing)
@@ -171,13 +232,15 @@ end
 _source(::Type{A}, fields::NamedTuple) where {A} = Lift{A}(values(fields))
 _source(::Type{A}, fields::Tuple) where {A} = Lift{A}(fields)
 _source(::Type{A}, field::AbstractArray) where {A} = Lift{A}((field,))
+_source(::Type{A}, s::Skipping) where {A} = Lift{A,typeof(s.fields),true}(s.fields)
 _source(::Type{A}, parent::AccumulatorArray{A}) where {A} = parent
 
 function _check_boxfold(out::AccumulatorArray{A,N}, src::Lift, w::Window{N}) where {A,N}
     size(out) == shape(w) || throw(DimensionMismatch("output $(size(out)) does not match window shape $(shape(w))"))
     extents = map(aw -> aw.extent, w)
-    for f in src.fields
-        size(f) == extents || throw(DimensionMismatch("field of size $(size(f)) does not match window extents $extents"))
+    # `map` first: iterating the fields themselves would union-split when they are not all the same type.
+    for s in map(size, src.fields)
+        s == extents || throw(DimensionMismatch("field of size $s does not match window extents $extents"))
     end
     length(src.fields) == arity(A) || throw(ArgumentError("$(length(src.fields)) field(s) for an accumulator of arity $(arity(A))"))
     return nothing

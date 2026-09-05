@@ -52,12 +52,13 @@ _view_components(c::AbstractArray, sel) = view(c, sel...)
 _view_components(c::Uniform, sel) = c
 
 """
-    allocate(plan, ::Type{A}, prototype::AbstractArray) -> Workspace
+    allocate(plan, ::Type{A}, prototype::AbstractArray; uniform_counts = true) -> Workspace
 
 Allocate the plan's buffers for accumulator type `A` where `prototype` lives, build the restride views,
-and prepare one step per computed node.
+and prepare one step per computed node. `uniform_counts = false` stores a count per cell even where the
+windows all hold the same number of them, as a request that drops observations needs.
 """
-function allocate(p::Plan{N}, ::Type{A}, prototype::AbstractArray) where {N,A<:AbstractAccumulator}
+function allocate(p::Plan{N}, ::Type{A}, prototype::AbstractArray; uniform_counts::Bool = true) where {N,A<:AbstractAccumulator}
     nbuf = maximum(p.buffer; init = 0)
     buffers = Vector{Any}(undef, nbuf)
     owner = Dict{Int,Int}()
@@ -66,7 +67,7 @@ function allocate(p::Plan{N}, ::Type{A}, prototype::AbstractArray) where {N,A<:A
         haskey(owner, b) && continue
         owner[b] = k
         n = p.nodes[k]
-        uniform = uniform_count(n) ? (n = volume(n.window),) : (;)
+        uniform = uniform_counts && uniform_count(n) ? (n = volume(n.window),) : (;)
         buffers[b] = AccumulatorArray(A, prototype, n.shape; uniform)
     end
     storage = Vector{Any}(undef, length(p.nodes))

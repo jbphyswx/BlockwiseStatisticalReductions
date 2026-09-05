@@ -28,7 +28,7 @@ function _run_finalizers!(steps::Vector{Any}, shifts::Tuple, backend)
     return nothing
 end
 
-struct Prepared{N,C<:AbstractAccumulator,ST<:Tuple,RT<:Tuple,BK,WS,R<:ScaleResults{N},SH}
+struct Prepared{N,C<:AbstractAccumulator,ST<:Tuple,RT<:Tuple,BK,WS,R<:ScaleResults{N},SH,WT,SK}
     plan::Plan{N}
     workspace::WS
     stats::ST
@@ -37,6 +37,8 @@ struct Prepared{N,C<:AbstractAccumulator,ST<:Tuple,RT<:Tuple,BK,WS,R<:ScaleResul
     result::R
     finalizers::Vector{Any}
     shift::SH
+    weights::WT
+    skipnan::SK
     fieldnames::NTuple{<:Any,Symbol}
     input_shape::NTuple{N,Int}
     in_bytes::Int
@@ -59,7 +61,8 @@ end
 
 """
     prepare(fields, scales; stats, edge = Truncate(), backend = CB.AutoBackend(),
-            acc_eltype = nothing, out_eltype = nothing, memory_limit = typemax(Int)) -> Prepared
+            acc_eltype = nothing, out_eltype = nothing, weights = nothing, skipnan = false,
+            memory_limit = typemax(Int)) -> Prepared
 
 Resolve a request against inputs shaped like `fields` (one array, or a `NamedTuple`/`Tuple` of
 same-shaped arrays) and allocate everything it needs. `scales` is anything [`resolve`](@ref) accepts.
@@ -68,11 +71,20 @@ reads. Accumulation defaults to [`accumulation_eltype`](@ref) of the promoted in
 to each tag's [`result_eltype`](@ref). `dimnames` names the axes, so a scale specification may address
 them by name; `spacing` gives their coordinates, so sizes may be given as a [`Length`](@ref) and results
 report the physical extent of every output cell.
+
+`weights` weights every statistic of the request: an array of one weight per input element, or per-axis
+factors as a tuple with one entry per axis (`nothing` where an axis has no factor) or a `NamedTuple`
+keyed by `dimnames`, whose product is formed per element. A statistic with no weighted form throws;
+`Count()` stays the number of observations. `Var`, `Std` and `Cov` take
+`corrected = :frequency | :reliability | false` alongside `true` for the weighted denominators.
+
+`skipnan = true` drops non-finite observations: each statistic sees only the elements whose own bound
+fields are all finite, and the counts and total weights reflect that.
 """
-function prepare(fields, scales; stats::Tuple, edge::EdgePolicy = Truncate(),
+function prepare(fields, scales; stats::Union{Tuple,NamedTuple}, edge::EdgePolicy = Truncate(),
                  backend::CB.AbstractExecutionBackend = CB.AutoBackend(), acc_eltype = nothing,
                  out_eltype = nothing, shift = :auto, dimnames = nothing, spacing = nothing,
-                 memory_limit::Int = typemax(Int))
+                 weights = nothing, skipnan::Bool = false, memory_limit::Int = typemax(Int))
     fs = _fieldtuple(fields)
     _check_fields(fs)
     names = _fieldnames(fields)
@@ -82,6 +94,12 @@ function prepare(fields, scales; stats::Tuple, edge::EdgePolicy = Truncate(),
     bk = resolve_backend(backend, fs)
     _check_dimnames(dimnames, N)
     targets = resolve(scales, shape; edge = edge, dimnames = dimnames, spacing = spacing)
+    wsrc = weight_source(weights, shape, dimnames)
+    if wsrc !== nothing
+        fs = (fs..., wsrc)
+        names = (names..., :weight)
+        stats = map(s -> weight_stat(s, length(fs)), stats)
+    end
     # Shifting keeps the offset out of every difference the moment kernels take, so the accumulation
     # eltype only has to resolve the spread of the data rather than its magnitude. That is what lets a
     # narrow input accumulate in its own eltype; `:auto` pays for it only where it buys something, which
@@ -93,17 +111,52 @@ function prepare(fields, scales; stats::Tuple, edge::EdgePolicy = Truncate(),
     router = _bind_router(fs, C)
     in_bytes = _in_bytes(C, fs)
     p = plan(shape, targets; backend = bk, in_bytes, acc_bytes = sizeof(C), memory_limit)
-    ws = allocate(p, C, fs[1])
+    ws = allocate(p, C, fs[1]; uniform_counts = !skipnan)
     eltypes = out_eltype === nothing ? outs : ntuple(_ -> out_eltype, length(stats))
     result = _allocate_results(p, targets, fs[1], statnames, eltypes, dimnames, spacing)
     sh = _shift_state(shift, shifting, Tin, length(_bound_fields(C)))
-    finalizers = _finalize_steps(p, ws, result, stats, routing, C, names)
-    return Prepared{N,C,typeof(stats),typeof(routing),typeof(bk),typeof(ws),typeof(result),typeof(sh)}(
-        p, ws, stats, routing, bk, result, finalizers, sh, names, shape, in_bytes)
+    tags = values(stats)
+    finalizers = _finalize_steps(p, ws, result, tags, routing, C, names)
+    skip = Val(skipnan)
+    return Prepared{N,C,typeof(tags),typeof(routing),typeof(bk),typeof(ws),typeof(result),typeof(sh),
+                    typeof(wsrc),typeof(skip)}(
+        p, ws, tags, routing, bk, result, finalizers, sh, wsrc, skip, names, shape, in_bytes)
+end
+
+"""
+    weight_source(weights, shape, dimnames) -> Union{Nothing,WeightSource}
+
+The weight field a `weights` keyword asks for: `nothing`, an [`ElementWeights`](@ref) of an array of one
+weight per input element, or [`SeparableWeights`](@ref) of per-axis factors given as a tuple (one entry
+per axis, `nothing` where an axis has no factor) or as a `NamedTuple` keyed by axis name.
+"""
+weight_source(::Nothing, shape::Dims, dimnames) = nothing
+function weight_source(w::AbstractArray, shape::Dims, dimnames)
+    size(w) == shape || throw(DimensionMismatch("weights of size $(size(w)) for an input of size $shape"))
+    return ElementWeights(w)
+end
+function weight_source(w::Tuple, shape::Dims{N}, dimnames) where {N}
+    length(w) == N || throw(ArgumentError("$(length(w)) weight factor(s) for $N axes"))
+    for d in 1:N
+        w[d] === nothing && continue
+        length(w[d]) == shape[d] ||
+            throw(DimensionMismatch("weight factor of length $(length(w[d])) for axis $d of extent $(shape[d])"))
+    end
+    return SeparableWeights(w, shape)
+end
+function weight_source(w::NamedTuple, shape::Dims{N}, dimnames) where {N}
+    dimnames === nothing && throw(ArgumentError("weight factors named $(keys(w)) need `dimnames`"))
+    for k in keys(w)
+        k in dimnames || throw(ArgumentError("unknown axis $k in weights; axes are $dimnames"))
+    end
+    return weight_source(ntuple(d -> get(w, dimnames[d], nothing), Val(N)), shape, dimnames)
 end
 
 # Bytes of raw input one observation reads: only the fields the composite actually binds.
-_in_bytes(::Type{C}, fs::Tuple) where {C} = sum(i -> sizeof(eltype(fs[i])), _bound_fields(C); init = 0)
+_in_bytes(::Type{C}, fs::Tuple) where {C} = sum(i -> _read_bytes(fs[i]), _bound_fields(C); init = 0)
+_read_bytes(f) = sizeof(eltype(f))
+# Separable weights are a handful of vectors read out of cache, not a stream from memory.
+_read_bytes(::SeparableWeights) = 0
 _bound_fields(::Type{Composite{M,B}}) where {M,B} = sort!(unique!(collect(Iterators.flatten(B))))
 # Kernels read fields positionally in binding order, so hand them the fields the composite binds. The
 # selection is fixed by the composite type, so it is generated rather than rebuilt on every call.
@@ -139,15 +192,23 @@ function blockstats!(p::Prepared, fields)
     _check_fields(fs)
     size(fs[1]) == p.input_shape ||
         throw(DimensionMismatch("input shape $(size(fs[1])) does not match the prepared shape $(p.input_shape)"))
-    length(fs) == length(p.fieldnames) ||
-        throw(ArgumentError("$(length(fs)) field(s) given for a request prepared with $(length(p.fieldnames))"))
-    bound = _bind_router(fs, _composite(p))
-    sh = _update_shift!(p.shift, bound)
-    run!(p.workspace, p.plan, _apply_shift(bound, sh), p.backend)
+    length(fs) == _nuserfields(p) ||
+        throw(ArgumentError("$(length(fs)) field(s) given for a request prepared with $(_nuserfields(p))"))
+    bound = _bind_router(_with_weights(fs, p.weights), _composite(p))
+    sh = _update_shift!(p.shift, bound, p.backend)
+    run!(p.workspace, p.plan, _skipping(_apply_shift(bound, sh), p.skipnan), p.backend)
     _run_finalizers!(p.finalizers, sh, p.backend)
     return p.result
 end
 _composite(::Prepared{N,C}) where {N,C} = C
+# The weight is a field of the request, not of the caller's data, so it is re-appended on every call.
+_with_weights(fs::Tuple, ::Nothing) = fs
+_with_weights(fs::Tuple, w::WeightSource) = (fs..., w)
+_nuserfields(p::Prepared) = length(p.fieldnames) - _nweights(p.weights)
+_nweights(::Nothing) = 0
+_nweights(::WeightSource) = 1
+@inline _skipping(fields::Tuple, ::Val{false}) = fields
+@inline _skipping(fields::Tuple, ::Val{true}) = Skipping(fields)
 
 # `:auto` shifts exactly when it buys accuracy: a floating input whose accumulation would otherwise have
 # to widen. An input already accumulating at its own width is well conditioned without it, and the
@@ -162,9 +223,9 @@ _shifting(shift::Bool, ::Type{Tin}, ::Type{C}, acc_eltype) where {Tin,C} =
 _shifting(shift::Union{Real,Tuple}, ::Type{Tin}, ::Type{C}, acc_eltype) where {Tin,C} = true
 
 # A tuple of `NoShift` marks a request that does not shift: the fields pass through untouched.
-_update_shift!(r::Base.RefValue{<:Tuple{NoShift,Vararg{NoShift}}}, fields::Tuple) = r[]
-function _update_shift!(r::Base.RefValue{S}, fields::Tuple) where {S<:Tuple{Vararg{Real}}}
-    r[] = ntuple(i -> field_shift(fields[i], eltype(S)), Val(fieldcount(S)))
+_update_shift!(r::Base.RefValue{<:Tuple{NoShift,Vararg{NoShift}}}, fields::Tuple, backend) = r[]
+function _update_shift!(r::Base.RefValue{S}, fields::Tuple, backend) where {S<:Tuple{Vararg{Real}}}
+    r[] = ntuple(i -> field_shift(fields[i], eltype(S), backend), Val(fieldcount(S)))
     return r[]
 end
 @inline _apply_shift(fields::Tuple, ::Tuple{NoShift,Vararg{NoShift}}) = fields
@@ -198,25 +259,30 @@ _shift_state(shift::Union{Real,Tuple}, shifting::Bool, ::Type{Tin}, nbound::Int)
 const SHIFT_SAMPLES = 4096
 
 """
-    field_shift(field, ::Type{T}) -> T
+    field_shift(field, ::Type{T}, backend) -> T
 
 A value near the middle of `field`, in `T`: the mean of an evenly strided sample of at most
 [`SHIFT_SAMPLES`](@ref) elements. Only the magnitude matters — the shift cancels exactly in the centred
-moments — so a sample suffices; a non-finite result falls back to zero.
+moments — so a sample suffices; a non-finite result falls back to zero. Reading the sample is a kernel
+like any other, so a backend whose arrays do not index on the host supplies its own method.
 """
-function field_shift(field::AbstractArray, ::Type{T}) where {T}
+# A weight is never shifted: subtracting a constant from a weight changes every weighted statistic.
+field_shift(::WeightSource, ::Type{T}, ::CB.AbstractExecutionBackend) where {T} = zero(T)
+function field_shift(field::AbstractArray, ::Type{T}, backend::CB.AbstractExecutionBackend) where {T}
     n = length(field)
     n == 0 && return zero(T)
-    step = max(1, n ÷ SHIFT_SAMPLES)
     total = 0.0
     taken = 0
-    @inbounds for i in 1:step:n
+    @inbounds for i in shift_sample(n)
         total += Float64(field[i])
         taken += 1
     end
     m = total / taken
     return isfinite(m) ? T(m) : zero(T)
 end
+
+"Indices of the strided sample [`field_shift`](@ref) averages over."
+shift_sample(n::Int) = 1:max(1, n ÷ SHIFT_SAMPLES):n
 
 """
     blockstats(fields, scales; stats, kwargs...) -> ScaleResults

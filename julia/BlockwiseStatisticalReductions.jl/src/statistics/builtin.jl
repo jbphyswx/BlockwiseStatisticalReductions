@@ -21,6 +21,9 @@ name(::Count{F}) where {F} = _named(:count, (F,), (1,))
 @inline finalize(::Count, a::CountAcc, ::Type{Tout}) where {Tout} = Tout(a.n)
 component_view(::Count, ::Type{CountAcc}) = :n
 
+"The mean of `n` observations: not a number when there are none to average."
+@inline _mean_or_nan(mean::T, n) where {T} = iszero(n) ? T(NaN) : mean
+
 # ── Sum ────────────────────────────────────────────────────────────────────────
 
 struct SumAcc{T} <: AbstractAccumulator
@@ -75,7 +78,7 @@ bindings(::Mean{F}) where {F} = (F,)
 accumulator_type(::Mean, ::Type{Tin}, ::Type{Tacc}) where {Tin,Tacc} = MeanAcc{Tacc}
 result_eltype(::Mean, ::Type{Tin}) where {Tin} = ratio_eltype(Tin)
 name(::Mean{F}) where {F} = _named(:mean, (F,), (1,))
-@inline finalize(::Mean, a::MeanAcc, ::Type{Tout}) where {Tout} = Tout(a.mean)
+@inline finalize(::Mean, a::MeanAcc, ::Type{Tout}) where {Tout} = Tout(_mean_or_nan(a.mean, a.n))
 @inline finalize(::Sum, a::MeanAcc, ::Type{Tout}) where {Tout} = Tout(a.mean * a.n)
 @inline finalize(::Count, a::MeanAcc, ::Type{Tout}) where {Tout} = Tout(a.n)
 component_view(::Mean, ::Type{<:MeanAcc}) = :mean
@@ -121,20 +124,29 @@ shiftable(::Type{<:VarAcc}) = true
 @inline unshift(a::VarAcc, s::Tuple{Vararg{Real}}) = VarAcc(a.n, a.mean + s[1], a.M2)
 
 struct Var{C,F} <: AbstractStatistic end
-Var(f = 1; corrected::Bool = true) = Var{corrected,f}()
+Var(f = 1; corrected = true) = Var{_corrected(corrected),f}()
 struct Std{C,F} <: AbstractStatistic end
-Std(f = 1; corrected::Bool = true) = Std{corrected,f}()
+Std(f = 1; corrected = true) = Std{_corrected(corrected),f}()
+
+"The validated `corrected` setting of a second-moment statistic: `true`, `false`, `:frequency` or `:reliability`."
+_corrected(c::Bool) = c
+_corrected(c::Symbol) = (c in (:frequency, :reliability) ||
+    throw(ArgumentError("corrected must be true, false, :frequency or :reliability, got :$c")); c)
 bindings(::Var{C,F}) where {C,F} = (F,)
 bindings(::Std{C,F}) where {C,F} = (F,)
 accumulator_type(::Union{Var,Std}, ::Type{Tin}, ::Type{Tacc}) where {Tin,Tacc} = VarAcc{Tacc}
 result_eltype(::Union{Var,Std}, ::Type{Tin}) where {Tin} = ratio_eltype(Tin)
 name(::Var{C,F}) where {C,F} = _named(:var, (F,), (1,))
 name(::Std{C,F}) where {C,F} = _named(:std, (F,), (1,))
-@inline _denominator(::Val{true}, n::Int, ::Type{T}) where {T} = T(n - 1)
+# Clamped at zero so a window with no observations divides 0 by 0 rather than by a negative count.
+@inline _denominator(::Val{true}, n::Int, ::Type{T}) where {T} = T(max(n - 1, 0))
 @inline _denominator(::Val{false}, n::Int, ::Type{T}) where {T} = T(n)
+@inline _denominator(::Val{:frequency}, n::Int, ::Type{T}) where {T} = T(max(n - 1, 0))
+# Unit weights make the reliability correction W - W2/W equal n - 1.
+@inline _denominator(::Val{:reliability}, n::Int, ::Type{T}) where {T} = T(max(n - 1, 0))
 @inline finalize(::Var{C}, a::VarAcc{T}, ::Type{Tout}) where {C,T,Tout} = Tout(a.M2 / _denominator(Val(C), a.n, T))
 @inline finalize(::Std{C}, a::VarAcc{T}, ::Type{Tout}) where {C,T,Tout} = Tout(sqrt(a.M2 / _denominator(Val(C), a.n, T)))
-@inline finalize(::Mean, a::VarAcc, ::Type{Tout}) where {Tout} = Tout(a.mean)
+@inline finalize(::Mean, a::VarAcc, ::Type{Tout}) where {Tout} = Tout(_mean_or_nan(a.mean, a.n))
 @inline finalize(::Sum, a::VarAcc, ::Type{Tout}) where {Tout} = Tout(a.mean * a.n)
 @inline finalize(::Count, a::VarAcc, ::Type{Tout}) where {Tout} = Tout(a.n)
 component_view(::Mean, ::Type{<:VarAcc}) = :mean
@@ -212,7 +224,7 @@ name(::Kurtosis{E,F}) where {E,F} = _named(:kurtosis, (F,), (1,))
     Tout(T(a.n) * a.M4 / (a.M2 * a.M2) - (E ? T(3) : zero(T)))
 @inline finalize(s::Var, a::CentralMomentsAcc{T}, ::Type{Tout}) where {T,Tout} = finalize(s, VarAcc(a.n, a.mean, a.M2), Tout)
 @inline finalize(s::Std, a::CentralMomentsAcc{T}, ::Type{Tout}) where {T,Tout} = finalize(s, VarAcc(a.n, a.mean, a.M2), Tout)
-@inline finalize(::Mean, a::CentralMomentsAcc, ::Type{Tout}) where {Tout} = Tout(a.mean)
+@inline finalize(::Mean, a::CentralMomentsAcc, ::Type{Tout}) where {Tout} = Tout(_mean_or_nan(a.mean, a.n))
 @inline finalize(::Sum, a::CentralMomentsAcc, ::Type{Tout}) where {Tout} = Tout(a.mean * a.n)
 @inline finalize(::Count, a::CentralMomentsAcc, ::Type{Tout}) where {Tout} = Tout(a.n)
 component_view(::Mean, ::Type{<:CentralMomentsAcc}) = :mean
@@ -381,7 +393,7 @@ shiftable(::Type{<:CovAcc}) = true
 @inline unshift(a::CovAcc, s::Tuple{Vararg{Real}}) = CovAcc(a.n, a.mean1 + s[1], a.mean2 + s[2], a.C)
 
 struct Cov{C,F1,F2} <: AbstractStatistic end
-Cov(f1 = 1, f2 = 2; corrected::Bool = true) = Cov{corrected,f1,f2}()
+Cov(f1 = 1, f2 = 2; corrected = true) = Cov{_corrected(corrected),f1,f2}()
 bindings(::Cov{C,F1,F2}) where {C,F1,F2} = (F1, F2)
 accumulator_type(::Cov, ::Type{Tin}, ::Type{Tacc}) where {Tin,Tacc} = CovAcc{Tacc}
 result_eltype(::Cov, ::Type{Tin}) where {Tin} = ratio_eltype(Tin)

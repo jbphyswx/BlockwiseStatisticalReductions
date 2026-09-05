@@ -1,10 +1,10 @@
 """
-    run!(ws::Workspace, plan::Plan, fields::Tuple, backend) -> ws
+    run!(ws::Workspace, plan::Plan, fields, backend) -> ws
 
 Execute every computed node of `plan` in order into the workspace; `fields` are the raw input arrays in
-binding order. Allocation-free once the steps are compiled.
+binding order, or a [`Skipping`](@ref) of them. Allocation-free once the steps are compiled.
 """
-function run!(ws::Workspace, p::Plan, fields::Tuple, backend::CB.AbstractExecutionBackend)
+function run!(ws::Workspace, p::Plan, fields::Union{Tuple,Skipping}, backend::CB.AbstractExecutionBackend)
     _run_steps(ws.steps, fields, backend)
     return ws
 end
@@ -17,7 +17,7 @@ end
 end
 run!(ws::Workspace, p::Plan, fields::NamedTuple, backend::CB.AbstractExecutionBackend) = run!(ws, p, values(fields), backend)
 
-execute!(s::BaseStep, fields::Tuple, backend) = (boxfold!(s.out, fields, s.window, s.shape, backend); nothing)
-execute!(s::CoarsenStep, fields::Tuple, backend) = (boxfold!(s.out, s.parent, s.grid, s.shape, backend); nothing)
-execute!(s::ComposeStep, fields::Tuple, backend) = (compose!(s.out, s.a, s.b, s.axis, s.amap, s.bmap, backend); nothing)
-execute!(s::ScanStep, fields::Tuple, backend) = (scan!(s.out, s.parent, s.axis, s.size, s.partial, s.scratch, backend); nothing)
+execute!(s::BaseStep, fields, backend) = (boxfold!(s.out, fields, s.window, s.shape, backend); nothing)
+execute!(s::CoarsenStep, fields, backend) = (boxfold!(s.out, s.parent, s.grid, s.shape, backend); nothing)
+execute!(s::ComposeStep, fields, backend) = (compose!(s.out, s.a, s.b, s.axis, s.amap, s.bmap, backend); nothing)
+execute!(s::ScanStep, fields, backend) = (scan!(s.out, s.parent, s.axis, s.size, s.partial, s.scratch, backend); nothing)

@@ -29,6 +29,15 @@ Accumulator of one observation; `xs` holds the `arity(A)` bound raw values in bi
 function lift end
 
 """
+    lift_skipping(::Type{A}, xs::Tuple) -> A
+
+[`lift`](@ref) of an observation that may not be finite: `neutral(A)` unless every bound value is
+finite. A composite skips member by member, so a gap in one field does not drop the others.
+"""
+@inline lift_skipping(::Type{A}, xs::Tuple) where {A<:AbstractAccumulator} =
+    all(isfinite, xs) ? lift(A, xs) : neutral(A)
+
+"""
     combine(::Type{A}, children) -> A
 
 Combine an iterable of accumulators; the k-ary counterpart of `merge(a::A, b::A)`. Runs the two-phase

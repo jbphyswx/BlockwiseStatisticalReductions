@@ -20,9 +20,14 @@ function threaded_gate(label, shape, scales, stats, threshold; nfields = 1)
     end
 end
 
-threaded_gate("base pass mean 8x 4096²", (4096, 4096), [8], (BSR.Mean(),), 1.3)
-threaded_gate("base pass mean+var 8x 4096²", (4096, 4096), [8], (BSR.Mean(), BSR.Var()), 2.5)
-threaded_gate("cov 8x 4096²", (4096, 4096), [8], (BSR.Cov(:f1, :f2),), 3.0; nfields = 2)
+# A base pass over 4096² is a few milliseconds at 8 threads, which is the same order as the task pool's
+# own spawn and join, so the ratio of two such measurements does not repeat: identical code measured
+# 1.09-1.42 across processes there, with the kernel term alone swinging 2.70-3.45 ms. At 8192² both terms
+# are long enough to drown that out and the same ratios repeat to within a few percent, so the base-pass
+# gates run there. The multi-scale gates below already take tens of milliseconds and stay at 4096².
+threaded_gate("base pass mean 8x 8192²", (8192, 8192), [8], (BSR.Mean(),), 1.4)
+threaded_gate("base pass mean+var 8x 8192²", (8192, 8192), [8], (BSR.Mean(), BSR.Var()), 2.5)
+threaded_gate("cov 8x 8192²", (8192, 8192), [8], (BSR.Cov(:f1, :f2),), 2.0; nfields = 2)
 threaded_gate("6 scales [2..64] mean+var 4096²", (4096, 4096), [2, 4, 8, 16, 32, 64], (BSR.Mean(), BSR.Var()), 5.5)
 threaded_gate("tile sizes 2..64 mean 4096²", (4096, 4096), collect(2:64), (BSR.Mean(),), 25.0)
 

@@ -76,8 +76,8 @@ Pkg.add(url = "https://github.com/jbphyswx/BlockwiseStatisticalReductions", subd
 ## Documentation
 
 Concepts, worked examples and the API reference are in `docs/`; build them with
-`julia --project=docs docs/make.jl`. Runnable scripts live in [`examples/`](examples). Upgrading from 0.1
-is covered in [`MIGRATION.md`](MIGRATION.md), and [`AGENTS.md`](AGENTS.md) describes the layering.
+`julia --project=docs docs/make.jl`. Runnable scripts live in [`examples/`](examples). Upgrading from the previous
+implementation is covered in [`MIGRATION.md`](MIGRATION.md), and [`AGENTS.md`](AGENTS.md) describes the layering.
 
 A Python implementation of the same idea lives in `python/` at the repository root; it is independent of
 this package.

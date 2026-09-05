@@ -27,7 +27,7 @@ Documenter.makedocs(;
             "Partitioned tensors" => "concepts/distributed.md",
         ],
         "Performance" => "performance.md",
-        "Migrating from 0.1" => "migration.md",
+        "Migrating" => "migration.md",
         "API reference" => "api.md",
     ],
 )

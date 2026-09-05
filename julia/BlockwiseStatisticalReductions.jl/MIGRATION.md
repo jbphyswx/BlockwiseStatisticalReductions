@@ -1,11 +1,12 @@
-# Migrating from 0.1
+# Migrating from the previous implementation
 
-Version 0.2 is a ground-up rebuild. Nothing from 0.1 is deprecated — it is gone — so this note maps the
-old surface onto the new one. The concepts survived; the names, the layering and the planner did not.
+The package was rebuilt from the ground up. Nothing from the previous implementation is deprecated — it
+is gone — so this note maps the old surface onto the new one. The concepts survived; the names, the
+layering and the planner did not.
 
 ## Entry points
 
-| 0.1 | 0.2 |
+| before | now |
 |---|---|
 | `reduce_stats(x, scales; stats, backend)` | `blockstats(x, scales; stats, backend)` |
 | `reduce_stats(x, y, scales; stats)` | `blockstats((x = x, y = y), scales; stats = (Cov(:x, :y),))` |
@@ -22,9 +23,9 @@ It adds `windows(r)`, `statnames(r)`, `geometry(r, key)`, `dimnames(r)` and `spa
 
 ## Asking for scales
 
-0.1 had three separate mechanisms. 0.2 has one: every request resolves to a list of windows.
+There were three separate mechanisms. Now there is one: every request resolves to a list of windows.
 
-| 0.1 | 0.2 |
+| before | now |
 |---|---|
 | `[2, 4, 8]` (isotropic factors) | `[2, 4, 8]` — unchanged |
 | `Tower(; base_factor = 2, steps = [2], maxfactor = 64)` | `Dyadic(; min = 2, max = 64)`, or just `[2, 4, 8, 16, 32, 64]` |
@@ -50,7 +51,7 @@ together instead of three passes.
 
 ## Accumulator interface
 
-| 0.1 | 0.2 |
+| before | now |
 |---|---|
 | `empty_acc(A)` | `neutral(A)` |
 | `inverse_merge(ab, b)` | `unmerge(ab, b)` |
@@ -66,7 +67,7 @@ that lets a composite of any number of members cost at most two passes over a bo
 
 ## Backends
 
-0.1 defined its own backend types. 0.2 dispatches on
+The old code defined its own backend types. Now dispatch goes through
 [ComputationalBackends.jl](https://github.com/jbphyswx/ComputationalBackends.jl):
 
 ```julia
@@ -77,7 +78,7 @@ blockstats(x, [8]; stats = (Mean(),), backend = CB.ThreadedBackend())
 `CB.AutoBackend()` is the default and picks a GPU backend for device arrays, threads when more than one
 is available, else serial.
 
-MPI changed shape: 0.1 had every rank hold the whole input and `Allgatherv!` the results. 0.2 takes a
+MPI changed shape: every rank used to hold the whole input and `Allgatherv!` the results. Now it takes a
 partitioned tensor — each rank passes its own slab as `Partitioned(slab; axis = d)` — and results stay
 partitioned by owning rank.
 

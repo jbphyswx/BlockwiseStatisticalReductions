@@ -306,12 +306,7 @@ end
 boxfold!(out::AccumulatorArray{A,N}, src, w::Window{N}, b::CB.AbstractExecutionBackend) where {A,N} = missing_extension(b)
 boxfold!(out::AccumulatorArray{A,N}, src, w::Window{N}, ::Val, b::CB.AbstractExecutionBackend) where {A,N} = missing_extension(b)
 
-"""
-    compose!(out, a, b, axis, amap, bmap, backend) -> out
-
-`out[I] = merge(a[Ia], b[Ib])` where `Ia`/`Ib` are `I` with the `axis` index replaced by
-`amap[I[axis]]`/`bmap[I[axis]]`; the other axes must match between `out`, `a` and `b`.
-"""
+"Throw unless `out`, `a` and `b` line up for a [`compose!`](@ref) along `axis`."
 function check_compose(out::AccumulatorArray{A,N}, a::AccumulatorArray{A,N}, b::AccumulatorArray{A,N},
                       axis::Int, amap::AbstractVector{Int}, bmap::AbstractVector{Int}) where {A,N}
     1 <= axis <= N || throw(ArgumentError("axis $axis out of range"))
@@ -337,6 +332,12 @@ end
     return @inbounds merge(a[Ia], b[Ib])
 end
 
+"""
+    compose!(out, a, b, axis, amap, bmap, backend) -> out
+
+`out[I] = merge(a[Ia], b[Ib])` where `Ia`/`Ib` are `I` with the `axis` index replaced by
+`amap[I[axis]]`/`bmap[I[axis]]`; the other axes must match between `out`, `a` and `b`.
+"""
 function compose!(out::AccumulatorArray{A,N}, a::AccumulatorArray{A,N}, b::AccumulatorArray{A,N},
                   axis::Int, amap::AbstractVector{Int}, bmap::AbstractVector{Int}, ::CB.AbstractSerialBackend) where {A,N}
     check_compose(out, a, b, axis, amap, bmap)

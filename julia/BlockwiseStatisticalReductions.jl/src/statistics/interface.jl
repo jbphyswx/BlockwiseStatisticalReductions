@@ -124,9 +124,6 @@ Value of the statistic for one accumulator. Methods exist for every accumulator 
 """
 function finalize end
 
-"Accumulator field that holds the finalized value verbatim, or `nothing`."
-component_view(::AbstractStatistic, ::Type{<:AbstractAccumulator}) = nothing
-
 "Default output eltype of a tag for input eltype `Tin`."
 result_eltype(::AbstractStatistic, ::Type{Tin}) where {Tin} = Tin
 

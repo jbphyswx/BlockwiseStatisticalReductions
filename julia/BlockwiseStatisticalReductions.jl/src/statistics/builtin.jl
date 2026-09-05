@@ -19,7 +19,6 @@ accumulator_type(::Count, ::Type{Tin}, ::Type{Tacc}) where {Tin,Tacc} = CountAcc
 result_eltype(::Count, ::Type{Tin}) where {Tin} = Int
 name(::Count{F}) where {F} = _named(:count, (F,), (1,))
 @inline finalize(::Count, a::CountAcc, ::Type{Tout}) where {Tout} = Tout(a.n)
-component_view(::Count, ::Type{CountAcc}) = :n
 
 "The mean of `n` observations: not a number when there are none to average."
 @inline _mean_or_nan(mean::T, n) where {T} = iszero(n) ? T(NaN) : mean
@@ -42,7 +41,6 @@ bindings(::Sum{F}) where {F} = (F,)
 accumulator_type(::Sum, ::Type{Tin}, ::Type{Tacc}) where {Tin,Tacc} = SumAcc{Tacc}
 name(::Sum{F}) where {F} = _named(:sum, (F,), (1,))
 @inline finalize(::Sum, a::SumAcc, ::Type{Tout}) where {Tout} = Tout(a.s)
-component_view(::Sum, ::Type{<:SumAcc}) = :s
 
 # ── Mean (n, mean): Welford lift, Chan merge; phase 1 pools (Σn, Σn·mean) ───────
 
@@ -81,8 +79,6 @@ name(::Mean{F}) where {F} = _named(:mean, (F,), (1,))
 @inline finalize(::Mean, a::MeanAcc, ::Type{Tout}) where {Tout} = Tout(_mean_or_nan(a.mean, a.n))
 @inline finalize(::Sum, a::MeanAcc, ::Type{Tout}) where {Tout} = Tout(a.mean * a.n)
 @inline finalize(::Count, a::MeanAcc, ::Type{Tout}) where {Tout} = Tout(a.n)
-component_view(::Mean, ::Type{<:MeanAcc}) = :mean
-component_view(::Count, ::Type{<:MeanAcc}) = :n
 subsumes(::Type{MeanAcc{T}}, ::Type{SumAcc{T}}) where {T} = true
 subsumes(::Type{<:MeanAcc}, ::Type{CountAcc}) = true
 
@@ -149,8 +145,6 @@ name(::Std{C,F}) where {C,F} = _named(:std, (F,), (1,))
 @inline finalize(::Mean, a::VarAcc, ::Type{Tout}) where {Tout} = Tout(_mean_or_nan(a.mean, a.n))
 @inline finalize(::Sum, a::VarAcc, ::Type{Tout}) where {Tout} = Tout(a.mean * a.n)
 @inline finalize(::Count, a::VarAcc, ::Type{Tout}) where {Tout} = Tout(a.n)
-component_view(::Mean, ::Type{<:VarAcc}) = :mean
-component_view(::Count, ::Type{<:VarAcc}) = :n
 subsumes(::Type{VarAcc{T}}, ::Type{MeanAcc{T}}) where {T} = true
 subsumes(::Type{VarAcc{T}}, ::Type{SumAcc{T}}) where {T} = true
 subsumes(::Type{<:VarAcc}, ::Type{CountAcc}) = true
@@ -227,8 +221,6 @@ name(::Kurtosis{E,F}) where {E,F} = _named(:kurtosis, (F,), (1,))
 @inline finalize(::Mean, a::CentralMomentsAcc, ::Type{Tout}) where {Tout} = Tout(_mean_or_nan(a.mean, a.n))
 @inline finalize(::Sum, a::CentralMomentsAcc, ::Type{Tout}) where {Tout} = Tout(a.mean * a.n)
 @inline finalize(::Count, a::CentralMomentsAcc, ::Type{Tout}) where {Tout} = Tout(a.n)
-component_view(::Mean, ::Type{<:CentralMomentsAcc}) = :mean
-component_view(::Count, ::Type{<:CentralMomentsAcc}) = :n
 subsumes(::Type{CentralMomentsAcc{T}}, ::Type{VarAcc{T}}) where {T} = true
 subsumes(::Type{CentralMomentsAcc{T}}, ::Type{MeanAcc{T}}) where {T} = true
 subsumes(::Type{CentralMomentsAcc{T}}, ::Type{SumAcc{T}}) where {T} = true
@@ -263,7 +255,6 @@ name(::Moments{K,F}) where {K,F} = _named(Symbol(:moments, K), (F,), (1,))
 @inline finalize(::Mean, a::RawMomentsAcc{K,T}, ::Type{Tout}) where {K,T,Tout} = Tout(a.S[1] / T(a.n))
 @inline finalize(::Sum, a::RawMomentsAcc, ::Type{Tout}) where {Tout} = Tout(a.S[1])
 @inline finalize(::Count, a::RawMomentsAcc, ::Type{Tout}) where {Tout} = Tout(a.n)
-component_view(::Count, ::Type{<:RawMomentsAcc}) = :n
 subsumes(::Type{RawMomentsAcc{K,T}}, ::Type{RawMomentsAcc{J,T}}) where {K,J,T} = K >= J
 subsumes(::Type{RawMomentsAcc{K,T}}, ::Type{MeanAcc{T}}) where {K,T} = true
 subsumes(::Type{RawMomentsAcc{K,T}}, ::Type{SumAcc{T}}) where {K,T} = true
@@ -323,10 +314,6 @@ name(::Extrema{F}) where {F} = _named(:extrema, (F,), (1,))
 @inline finalize(::Min, a::ExtremaAcc, ::Type{Tout}) where {Tout} = Tout(a.lo)
 @inline finalize(::Max, a::ExtremaAcc, ::Type{Tout}) where {Tout} = Tout(a.hi)
 @inline finalize(::Extrema, a::ExtremaAcc, ::Type{Tuple{T,T}}) where {T} = (T(a.lo), T(a.hi))
-component_view(::Min, ::Type{<:MinAcc}) = :m
-component_view(::Max, ::Type{<:MaxAcc}) = :m
-component_view(::Min, ::Type{<:ExtremaAcc}) = :lo
-component_view(::Max, ::Type{<:ExtremaAcc}) = :hi
 subsumes(::Type{ExtremaAcc{T}}, ::Type{MinAcc{T}}) where {T} = true
 subsumes(::Type{ExtremaAcc{T}}, ::Type{MaxAcc{T}}) where {T} = true
 
@@ -467,4 +454,3 @@ bindings(c::Component) = bindings(c.tag)
 accumulator_type(c::Component, ::Type{Tin}, ::Type{Tacc}) where {Tin,Tacc} = accumulator_type(c.tag, Tin, Tacc)
 name(c::Component{S,C}) where {S,C} = Symbol(C, _suffix(bindings(c.tag), ntuple(identity, length(bindings(c.tag)))))
 @inline finalize(::Component{S,C}, a::AbstractAccumulator, ::Type{Tout}) where {S,C,Tout} = Tout(getfield(a, C))
-component_view(::Component{S,C}, ::Type{<:AbstractAccumulator}) where {S,C} = C

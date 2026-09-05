@@ -17,4 +17,5 @@ Test.@testset "BlockwiseStatisticalReductions" begin
     include("test_labeled.jl")
     include("test_io.jl")
     include("test_mpi.jl")
+    include("test_distributed.jl")
 end

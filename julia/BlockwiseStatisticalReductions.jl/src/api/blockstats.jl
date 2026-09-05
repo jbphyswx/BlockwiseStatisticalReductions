@@ -89,17 +89,29 @@ fields are all finite, and the counts and total weights reflect that.
 `into` writes the results into arrays the caller already holds — one `NamedTuple` of arrays per requested
 window, shaped and named like the ones `prepare` would otherwise allocate — instead of allocating them.
 """
-function prepare(fields, scales; stats::Union{Tuple,NamedTuple}, edge::EdgePolicy = Truncate(),
-                 backend::CB.AbstractExecutionBackend = CB.AutoBackend(), acc_eltype = nothing,
-                 out_eltype = nothing, shift = :auto, dimnames = nothing, spacing = nothing,
-                 weights = nothing, skipnan::Bool = false, into = nothing, memory_limit::Int = typemax(Int))
+prepare(fields, scales; backend::CB.AbstractExecutionBackend = CB.AutoBackend(), kw...) =
+    prepare_on(fields, scales, resolve_backend(backend, _fieldtuple(fields)); kw...)
+
+"""
+    prepare_on(fields, scales, backend; kwargs...) -> Prepared
+
+[`prepare`](@ref) with the backend already concrete. A backend that does not run the kernels in this
+process defines its own method; the fallback here reports the extension that would have defined it.
+"""
+prepare_on(fields, scales, backend::CB.AbstractExecutionBackend; kw...) = missing_extension(backend)
+prepare_on(fields, scales, backend::CB.AbstractMPIBackend; kw...) =
+    throw(ArgumentError("an MPI request needs a partitioned input: wrap this rank's slab in `Partitioned(fields; axis = ...)`"))
+
+function prepare_on(fields, scales, backend::CB.AbstractLocalBackend; stats::Union{Tuple,NamedTuple},
+                    edge::EdgePolicy = Truncate(), acc_eltype = nothing, out_eltype = nothing,
+                    shift = :auto, dimnames = nothing, spacing = nothing, weights = nothing,
+                    skipnan::Bool = false, into = nothing, memory_limit::Int = typemax(Int))
     fs = _fieldtuple(fields)
     _check_fields(fs)
     names = _fieldnames(fields)
     shape = size(fs[1])
     N = length(shape)
     Tin = promote_type(map(eltype, fs)...)
-    bk = resolve_backend(backend, fs)
     _check_dimnames(dimnames, N)
     targets = resolve(scales, shape; edge = edge, dimnames = dimnames, spacing = spacing)
     wsrc = weight_source(weights, shape, dimnames)
@@ -118,7 +130,7 @@ function prepare(fields, scales; stats::Union{Tuple,NamedTuple}, edge::EdgePolic
     C, routing, statnames, outs = assemble(stats, names, Tin, Tacc)
     router = _bind_router(fs, C)
     in_bytes = _in_bytes(C, fs)
-    p = plan(shape, targets; backend = bk, in_bytes, acc_bytes = sizeof(C), memory_limit)
+    p = plan(shape, targets; backend = backend, in_bytes, acc_bytes = sizeof(C), memory_limit)
     ws = allocate(p, C, fs[1]; uniform_counts = !skipnan)
     eltypes = out_eltype === nothing ? outs : ntuple(_ -> out_eltype, length(stats))
     result = _allocate_results(p, targets, fs[1], statnames, eltypes, dimnames, spacing, into)
@@ -126,9 +138,9 @@ function prepare(fields, scales; stats::Union{Tuple,NamedTuple}, edge::EdgePolic
     tags = values(stats)
     finalizers = _finalize_steps(p, ws, result, tags, routing, C, names)
     skip = Val(skipnan)
-    return Prepared{N,C,typeof(tags),typeof(routing),typeof(bk),typeof(ws),typeof(result),typeof(sh),
+    return Prepared{N,C,typeof(tags),typeof(routing),typeof(backend),typeof(ws),typeof(result),typeof(sh),
                     typeof(wsrc),typeof(skip)}(
-        p, ws, tags, routing, bk, result, finalizers, sh, wsrc, skip, names, shape, in_bytes)
+        p, ws, tags, routing, backend, result, finalizers, sh, wsrc, skip, names, shape, in_bytes)
 end
 
 """
@@ -341,6 +353,14 @@ function blockstats(fields, scales; kwargs...)
     p = prepare(fields, scales; kwargs...)
     return blockstats!(p, fields)
 end
+
+"""
+    release!(p) -> nothing
+
+Give back whatever a prepared request holds outside this process. A request whose work is all local holds
+nothing, so this does nothing.
+"""
+release!(::Prepared) = nothing
 
 "Plan report for a prepared request or a result (see [`explain`](@ref) on a plan)."
 explain(io::IO, p::Prepared; kw...) = explain(io, p.plan; in_bytes = p.in_bytes, acc_bytes = sizeof(_composite(p)), kw...)

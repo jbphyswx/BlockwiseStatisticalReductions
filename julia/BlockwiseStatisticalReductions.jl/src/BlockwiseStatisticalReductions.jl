@@ -36,7 +36,7 @@ include("api/blockstats.jl")
 include("api/partitioned.jl")
 include("api/show.jl")
 
-export blockstats, blockstats!, prepare, explain
+export blockstats, blockstats!, prepare, explain, release!
 export ScaleResults, windows, scales, geometry, dimnames, spacing, statnames
 export Count, Sum, Mean, Var, Std, CentralMoments, Skewness, Kurtosis, Moments, Min, Max, Extrema,
        ProductMean, Cov, Corr, Component

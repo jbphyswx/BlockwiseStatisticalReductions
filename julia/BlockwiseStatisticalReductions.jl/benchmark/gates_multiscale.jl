@@ -45,7 +45,7 @@ function scale_gates(name, shape, T, targets_fn, stats; fields = 1, sharing, eff
 end
 
 # Sharing thresholds sit just above what the request allows: a tower is one base pass plus a coarsen
-# chain (its floor is set by the traffic of the chain, which fusion will cut); a set of tile sizes needs
+# chain (its floor is set by the traffic of the chain); a set of tile sizes needs
 # one base pass per size with no common divisor; dense windows are dominated by their own output writes.
 # Executor thresholds are 1.5: the cost model is calibrated against these kernels, so a plan that hits
 # the model lands near or below 1.

@@ -88,7 +88,7 @@ end
 BSR.kernel_limits(::CB.AbstractThreadedBackend, N::Int) =
     (serial = BSR.kernel_limits(CB.SerialBackend(), N);
      t = Threads.nthreads();
-     BSR.KernelLimits(max(serial.min_cells, 64 * t), serial.max_tile_elements, serial.fusion_tile,
+     BSR.KernelLimits(max(serial.min_cells, 64 * t), serial.max_tile_elements,
                       serial.bandwidth * min(t, 6), serial.merge_rate * t, serial.serial_merge_rate * t))
 
 end

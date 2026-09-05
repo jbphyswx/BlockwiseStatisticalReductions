@@ -2,22 +2,20 @@
     KernelLimits
 
 What a backend's kernels want from a plan: `min_cells` per launch for full parallelism,
-`max_tile_elements` per base box, the `fusion_tile` edge (cells per axis; `0` disables fusion), and the
-roofline rates the cost model divides by — `bandwidth` (bytes/s), `merge_rate` (merges/s for merges that
+`max_tile_elements` per base box, and the roofline rates the cost model divides by — `bandwidth` (bytes/s), `merge_rate` (merges/s for merges that
 are independent per cell, so they pipeline and vectorize) and `serial_merge_rate` (merges/s along a
 carried dependency, which neither vectorizes nor overlaps).
 """
 struct KernelLimits
     min_cells::Int
     max_tile_elements::Int
-    fusion_tile::Int
     bandwidth::Float64
     merge_rate::Float64
     serial_merge_rate::Float64
     scan_ok::Bool
 end
-KernelLimits(min_cells, max_tile_elements, fusion_tile, bandwidth, merge_rate, serial_merge_rate) =
-    KernelLimits(min_cells, max_tile_elements, fusion_tile, bandwidth, merge_rate, serial_merge_rate, true)
+KernelLimits(min_cells, max_tile_elements, bandwidth, merge_rate, serial_merge_rate) =
+    KernelLimits(min_cells, max_tile_elements, bandwidth, merge_rate, serial_merge_rate, true)
 
 "Bytes moved, independent merges, and dependency-carried merges performed by one derivation."
 struct Cost
@@ -52,5 +50,5 @@ end
 
 # Rates measured on this package's serial kernels (benchmark/gates_kernels.jl): streaming bandwidth,
 # independent merges near one per cycle, and the scan's dependency-carried merges about 5x slower (calibrated so the scan gate's measured/modelled ratio is ~1).
-kernel_limits(::CB.AbstractSerialBackend, N::Int) = KernelLimits(1, 4096, N == 1 ? 4096 : N == 2 ? 64 : 16, 15e9, 1e9, 2e8)
+kernel_limits(::CB.AbstractSerialBackend, N::Int) = KernelLimits(1, 4096, 15e9, 1e9, 2e8)
 kernel_limits(b::CB.AbstractExecutionBackend, N::Int) = missing_extension(b)

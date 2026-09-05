@@ -51,7 +51,7 @@ is_view(::Restride) = true
     Plan{N}
 
 Nodes with one derivation each, an execution `order` (views excluded), a buffer id per node (`0` for
-views), the requested nodes as `outputs` (in target order) and the fused chains.
+views), and the requested nodes as `outputs`, in target order.
 """
 struct Plan{N}
     input_shape::NTuple{N,Int}
@@ -60,7 +60,6 @@ struct Plan{N}
     order::Vector{Int}
     buffer::Vector{Int}
     outputs::Vector{Int}
-    fusion::Vector{Vector{Int}}
 end
 
 Base.length(p::Plan) = length(p.nodes)

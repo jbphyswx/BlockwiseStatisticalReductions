@@ -83,7 +83,7 @@ Test.@testset "execute" begin
             BSR.Base_(),
             BSR.Scan(5, 1, 5, true),
         ]
-        p = BSR.Plan{2}((48, 30), nodes, how, [1, 5, 2, 4, 6], [1, 2, 0, 3, 4, 5], [2, 3, 4, 6], Vector{Int}[])
+        p = BSR.Plan{2}((48, 30), nodes, how, [1, 5, 2, 4, 6], [1, 2, 0, 3, 4, 5], [2, 3, 4, 6])
         BSR.check(p)
         ws = BSR.allocate(p, BSR.VarAcc{Float64}, x)
         BSR.run!(ws, p, (x,), SER)
@@ -92,8 +92,8 @@ Test.@testset "execute" begin
             Test.@test got ≈ brute(Statistics.var, x, w)
         end
         Test.@test BSR.node_storage(ws, 3) isa BSR.AccumulatorArray
-        Test.@test_throws ErrorException BSR.check(BSR.Plan{2}((48, 30), nodes, how, [1, 5, 2, 4, 6], [1, 2, 0, 3, 4, 5], [2, 3, 4, 6], Vector{Int}[]) |>
-                                                     q -> BSR.Plan{2}(q.input_shape, q.nodes, BSR.Derivation[q.how[1:3]..., BSR.Coarsen{2}(2, (2, 1)), q.how[5:6]...], q.order, q.buffer, q.outputs, q.fusion))
+        Test.@test_throws ErrorException BSR.check(BSR.Plan{2}((48, 30), nodes, how, [1, 5, 2, 4, 6], [1, 2, 0, 3, 4, 5], [2, 3, 4, 6]) |>
+                                                     q -> BSR.Plan{2}(q.input_shape, q.nodes, BSR.Derivation[q.how[1:3]..., BSR.Coarsen{2}(2, (2, 1)), q.how[5:6]...], q.order, q.buffer, q.outputs))
     end
 
     Test.@testset "zero allocation after warmup" begin

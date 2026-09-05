@@ -25,7 +25,6 @@ include("planner/explain.jl")
 
 include("kernels/boxfold.jl")
 include("kernels/scan.jl")
-include("kernels/fused.jl")
 include("kernels/finalize.jl")
 
 include("execute/workspace.jl")

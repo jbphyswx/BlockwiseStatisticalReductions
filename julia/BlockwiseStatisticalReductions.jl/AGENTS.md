@@ -34,10 +34,14 @@ vocabulary anywhere in this package: axes are axes, windows are windows, fields 
 | `api/` | `blockstats`, `prepare`/`prepare_on`, `blockstats!`, `ScaleResults`, `Partitioned`/`slab_request` for split tensors, `show` |
 | `backends.jl` | `CB` import, auto-resolution, kernel limits per backend, throwing stubs for extension-only backends |
 
-An empty file in this tree is a layer that has not landed. `kernels/fused.jl` is the only one:
-**fusion is not implemented.** Measured on a six-scale tower it would cut traffic from 402 MB to 267 MB
-by keeping intermediate levels in cache; the planner already removes the redundant *computation*, so this
-is purely a memory-traffic optimization.
+**Fusion was tried and does not pay — do not re-derive this.** Computing several tiled levels per cache
+tile looks like a 33 % traffic saving on a six-scale tower (402 MB → 267 MB), but measured it is 1.05× at
+best in 2-D and 0.88× in 3-D. The bytes it removes are perfectly sequential and already prefetched, while
+the blocking needed to remove them damages the input read, which is the whole cost. Blocking the
+contiguous axis is 1.8× slower outright. In N dimensions a level shrinks by `kᴺ`, so the higher the
+dimension the less there is to save and the worse the trade. The implementation and its hooks
+(`Plan.fusion`, `KernelLimits.fusion_tile`) were removed rather than left as surface with nothing behind
+them; see the performance page for the numbers.
 
 ## Extensions (`ext/`)
 

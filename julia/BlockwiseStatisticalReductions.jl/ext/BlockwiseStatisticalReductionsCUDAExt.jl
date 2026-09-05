@@ -35,7 +35,7 @@ function BSR.kernel_limits(b::CUDAGPU, N::Int)
     (bandwidth === nothing || lanes === nothing) && return generic
     # One merge per lane per cycle is optimistic; the planner only needs the ratio to bandwidth to be right.
     merges = 1e9 * lanes
-    return BSR.KernelLimits(max(generic.min_cells, 8 * lanes), generic.max_tile_elements, generic.fusion_tile,
+    return BSR.KernelLimits(max(generic.min_cells, 8 * lanes), generic.max_tile_elements,
                             bandwidth, merges, merges, generic.scan_ok)
 end
 

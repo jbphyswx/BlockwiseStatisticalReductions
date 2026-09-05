@@ -165,7 +165,7 @@ function _assemble(shape::NTuple{N,Int}, s::_Search{N}, M::Vector{Int}, best::Di
     order = sort(computed; by = k -> (prod(sizes(nodes[k])), -cells(nodes[k]), k))
     buffer = _assign_buffers(nodes, how, order)
     outputs = [renum[q] for q in 1:ntargets]
-    return Plan{N}(shape, nodes, how, order, buffer, outputs, Vector{Int}[])
+    return Plan{N}(shape, nodes, how, order, buffer, outputs)
 end
 _renumber(d::Base_, renum) = d
 _renumber(d::Coarsen{N}, renum) where {N} = Coarsen{N}(renum[d.parent], d.k)

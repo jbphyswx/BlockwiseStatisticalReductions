@@ -113,7 +113,6 @@ end
 # boxes stay small. Rates are placeholders until measured on real hardware — a device's bandwidth and
 # merge throughput are both an order above a socket's, and `scan_ok = false` keeps the planner on
 # composition, whose cells are independent.
-BSR.kernel_limits(::CB.AbstractGPUBackend, N::Int) =
-    BSR.KernelLimits(1 << 16, 256, N == 1 ? 1024 : N == 2 ? 32 : 8, 500e9, 5e10, 5e10, false)
+BSR.kernel_limits(::CB.AbstractGPUBackend, N::Int) = BSR.KernelLimits(1 << 16, 256, 500e9, 5e10, 5e10, false)
 
 end

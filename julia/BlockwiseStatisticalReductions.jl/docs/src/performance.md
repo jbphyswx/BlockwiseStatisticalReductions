@@ -61,6 +61,27 @@ A base pass reads the input once and writes one accumulator per output cell. At 
 reads and the ratio rises. A coarsen level reads its parent and writes 1/kᴺ as much, so a tower's levels
 cost a geometric series on top of the base pass — which is why six scales cost 2.03 rather than 6.
 
-The remaining opportunity is fusion: computing several tiled levels within one cache tile so the
-intermediates never reach DRAM. Measured on the six-scale tower, that would cut traffic from 402 MB to
-267 MB. It is not implemented.
+### Fusion does not help here, and was measured rather than assumed
+
+The obvious remaining idea is fusion: compute several tiled levels within one cache tile so the
+intermediate levels never reach DRAM. Counting bytes, that looks like a 33 % saving on the six-scale
+tower — 402 MB down to 267 MB.
+
+It was implemented and measured, and it does not pay:
+
+| request | best fused fold vs unfused |
+|---|---|
+| 4096², six scales, mean + variance | 1.05× |
+| 4096², six scales, mean | 1.09× |
+| 4096², every tile size 2…64 | 1.01× |
+| 512×512×128 Float32, four scales | **0.88×** |
+
+The byte count is right but the bytes are not equal. The intermediate reads it removes are perfectly
+sequential and already prefetched — the unfused executor runs at 27.9 GB/s, above the 18.9 GB/s a
+streaming `sum` reaches — while the blocking needed to remove them makes the *input* read worse. Blocking
+the contiguous axis is 1.8× slower outright; keeping it whole and blocking only the outer axes recovers
+to about break-even in 2-D. Nothing recovered the 3-D case: coarsening by `k` shrinks a level by `kᴺ`, so
+in three dimensions the intermediates are a seventh of the base pass and there is almost nothing to save,
+while the blocking cost is paid on the base pass, which is everything.
+
+The implementation was reverted rather than shipped behind a flag.

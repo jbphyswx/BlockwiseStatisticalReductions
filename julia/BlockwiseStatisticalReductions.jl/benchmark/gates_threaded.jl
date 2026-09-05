@@ -13,7 +13,7 @@ function threaded_gate(label, shape, scales, stats, threshold; nfields = 1)
     gate("threaded", "$label (vs threaded sum)", threshold) do
         names = ntuple(i -> Symbol(:f, i), nfields)
         fields = NamedTuple{names}(ntuple(_ -> randn(shape...), nfields))
-        p = prepare(fields, scales; stats = stats, backend = THREADED)
+        p = BSR.prepare(fields, scales; stats = stats, backend = THREADED)
         BSR.blockstats!(p, fields)
         t = best(() -> BSR.blockstats!(p, fields))
         return t / sum(roofline_threaded, values(fields))
@@ -32,16 +32,16 @@ if Threads.nthreads() > 1
     gate("threaded", "tile sizes 2..64 mean 4096²: threaded/serial time", 0.7) do
         x = randn(4096, 4096)
         scales = collect(2:64)
-        ps = prepare(x, scales; stats = (BSR.Mean(),), backend = CB.SerialBackend())
-        pt = prepare(x, scales; stats = (BSR.Mean(),), backend = THREADED)
+        ps = BSR.prepare(x, scales; stats = (BSR.Mean(),), backend = CB.SerialBackend())
+        pt = BSR.prepare(x, scales; stats = (BSR.Mean(),), backend = THREADED)
         BSR.blockstats!(ps, x); BSR.blockstats!(pt, x)
         return best(() -> BSR.blockstats!(pt, x)) / best(() -> BSR.blockstats!(ps, x))
     end
     gate("threaded", "15 dense sizes 2..16 mean 1024²: threaded/serial time", 0.7) do
         x = randn(1024, 1024)
         spec = BSR.ScaleSet(BSR.Sizes(collect(2:16)); placement = BSR.Dense())
-        ps = prepare(x, spec; stats = (BSR.Mean(),), backend = CB.SerialBackend())
-        pt = prepare(x, spec; stats = (BSR.Mean(),), backend = THREADED)
+        ps = BSR.prepare(x, spec; stats = (BSR.Mean(),), backend = CB.SerialBackend())
+        pt = BSR.prepare(x, spec; stats = (BSR.Mean(),), backend = THREADED)
         BSR.blockstats!(ps, x); BSR.blockstats!(pt, x)
         return best(() -> BSR.blockstats!(pt, x), 3) / best(() -> BSR.blockstats!(ps, x), 3)
     end

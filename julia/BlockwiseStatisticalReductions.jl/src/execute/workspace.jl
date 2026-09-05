@@ -78,20 +78,43 @@ function allocate(p::Plan{N}, ::Type{A}, prototype::AbstractArray) where {N,A<:A
         is_view(d) || continue
         storage[k] = subarray(storage[d.parent], d.sel)
     end
-    steps = Tuple(_step(p, k, storage) for k in p.order)
+    steps = Tuple(_step(p, k, storage, prototype) for k in p.order)
     return Workspace{N,typeof(steps)}(buffers, storage, steps)
 end
 
-function _step(p::Plan{N}, k::Int, storage) where {N}
+# Index data a kernel dereferences must live where the kernel runs. Ranges are isbits and travel as
+# they are; an explicit list is copied into the storage's array type once, here, rather than per call.
+_like(proto::AbstractArray, v::AbstractRange) = v
+_like(proto::AbstractArray, v::AbstractVector) = copyto!(similar(proto, eltype(v), size(v)), v)
+_like(proto::AbstractArray, p::Progression) = p
+_like(proto::AbstractArray, p::Origins) = (v = _like(proto, p.origins); Origins{typeof(v)}(v))
+_like(proto::AbstractArray, aw::AxisWindow) = AxisWindow(aw.extent, aw.size, _like(proto, aw.pos), aw.partial)
+_like(proto::AbstractArray, w::Tuple) = map(x -> _like(proto, x), w)
+
+# One component array of a node's storage, or `nothing` when every component is uniform (a count-only
+# request stores no arrays at all).
+_prototype(aa::AccumulatorArray) = _find_array(aa.components)
+_find_array(c::AbstractArray) = c
+_find_array(::Uniform) = nothing
+function _find_array(nt::NamedTuple)
+    for v in values(nt)
+        a = _find_array(v)
+        a === nothing || return a
+    end
+    return nothing
+end
+
+function _step(p::Plan{N}, k::Int, storage, prototype::AbstractArray) where {N}
     d, n = p.how[k], p.nodes[k]
+    proto = prototype
     if d isa Base_
-        return BaseStep(storage[k], n.window, Val(static_shape(n.window)))
+        return BaseStep(storage[k], _like(proto, n.window), Val(static_shape(n.window)))
     elseif d isa Coarsen
         parent = p.nodes[d.parent]
         grid = ntuple(a -> tiled(parent.shape[a], d.k[a], n.window[a].partial ? Partial() : Truncate()), Val(N))
-        return CoarsenStep(storage[k], storage[d.parent], grid, Val(static_shape(grid)))
+        return CoarsenStep(storage[k], storage[d.parent], _like(proto, grid), Val(static_shape(grid)))
     elseif d isa Compose
-        return ComposeStep(storage[k], storage[d.a], storage[d.b], d.axis, d.amap, d.bmap)
+        return ComposeStep(storage[k], storage[d.a], storage[d.b], d.axis, _like(proto, d.amap), _like(proto, d.bmap))
     elseif d isa Scan
         A = eltype(storage[k])
         return ScanStep(storage[k], storage[d.parent], d.axis, d.size, d.partial, ScanScratch(A, d.size))

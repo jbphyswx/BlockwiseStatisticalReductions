@@ -43,7 +43,7 @@ function _derivations_from(s::_Search{N}, q::Int, i::Int, M::Vector{Int}, keys::
     for axis in 1:N
         all(e -> e == axis || pw[e] == cw[e], 1:N) || continue
         pa, ca = pw[axis], cw[axis]
-        if _is_identity(pa) && _is_dense(ca) && ca.size > 1
+        if s.limits.scan_ok && _is_identity(pa) && _is_dense(ca) && ca.size > 1
             push!(out, Scan(q, axis, ca.size, ca.partial))
         end
         for r in get(keys, _offaxis_key(cw, axis), Int[])

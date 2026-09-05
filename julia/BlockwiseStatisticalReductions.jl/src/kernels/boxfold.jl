@@ -9,6 +9,8 @@ struct Shifted{A<:AbstractArray,S}
     field::A
     shift::S
 end
+Adapt.adapt_structure(to, f::Shifted) = Shifted(Adapt.adapt(to, f.field), f.shift)
+
 @inline value(f::AbstractArray, J::CartesianIndex) = @inbounds f[J]
 @inline value(f::Shifted, J::CartesianIndex) = (@inbounds f.field[J]) - f.shift
 Base.size(f::Shifted) = size(f.field)
@@ -19,6 +21,7 @@ struct Lift{A<:AbstractAccumulator,F<:Tuple}
     fields::F
 end
 Lift{A}(fields::F) where {A,F<:Tuple} = Lift{A,F}(fields)
+Adapt.adapt_structure(to, l::Lift{A}) where {A} = Lift{A}(map(f -> Adapt.adapt(to, f), l.fields))
 
 @inline leaf(src::Lift{A}, J::CartesianIndex) where {A} = lift(A, map(f -> value(f, J), src.fields))
 @inline leaf(src::AccumulatorArray, J::CartesianIndex) = @inbounds src[J]

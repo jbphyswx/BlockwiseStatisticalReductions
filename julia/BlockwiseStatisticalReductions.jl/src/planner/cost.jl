@@ -14,7 +14,10 @@ struct KernelLimits
     bandwidth::Float64
     merge_rate::Float64
     serial_merge_rate::Float64
+    scan_ok::Bool
 end
+KernelLimits(min_cells, max_tile_elements, fusion_tile, bandwidth, merge_rate, serial_merge_rate) =
+    KernelLimits(min_cells, max_tile_elements, fusion_tile, bandwidth, merge_rate, serial_merge_rate, true)
 
 "Bytes moved, independent merges, and dependency-carried merges performed by one derivation."
 struct Cost

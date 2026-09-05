@@ -16,15 +16,23 @@ struct Progression <: Positions
     end
 end
 
-"An explicit strictly increasing list of origins."
-struct Origins <: Positions
-    origins::Vector{Int}
-    function Origins(origins::AbstractVector{<:Integer})
-        v = Vector{Int}(origins)
-        (isempty(v) || v[1] >= 0) || throw(ArgumentError("origins must be ≥ 0"))
-        all(i -> v[i] < v[i+1], 1:length(v)-1) || throw(ArgumentError("origins must be strictly increasing"))
-        return new(v)
-    end
+"""
+    Origins(origins::AbstractVector{<:Integer})
+
+An explicit strictly increasing list of origins. Parametric in the vector type so a window can be moved
+to a device alongside the data it addresses; the checked constructor builds the host form.
+"""
+struct Origins{V<:AbstractVector{Int}} <: Positions
+    origins::V
+    # Declared so no unchecked outer constructor is generated; the checked one below is the way in, and
+    # this parametric form is for moving an already-checked list to another array type.
+    Origins{V}(origins::V) where {V<:AbstractVector{Int}} = new{V}(origins)
+end
+function Origins(origins::AbstractVector{<:Integer})
+    v = Vector{Int}(origins)
+    (isempty(v) || v[1] >= 0) || throw(ArgumentError("origins must be ≥ 0"))
+    all(i -> v[i] < v[i+1], 1:length(v)-1) || throw(ArgumentError("origins must be strictly increasing"))
+    return Origins{Vector{Int}}(v)
 end
 
 "Origins of a `Positions` as an `AbstractVector{Int}`."
@@ -74,6 +82,10 @@ struct AxisWindow{P<:Positions}
 end
 
 const Window{N} = NTuple{N,AxisWindow}
+
+# Explicit origins live in an array, so a window only reaches a device kernel after adapting.
+Adapt.adapt_structure(to, p::Origins) = (v = Adapt.adapt(to, p.origins); Origins{typeof(v)}(v))
+Adapt.adapt_structure(to, aw::AxisWindow) = AxisWindow(aw.extent, aw.size, Adapt.adapt(to, aw.pos), aw.partial)
 
 Base.:(==)(a::AxisWindow, b::AxisWindow) =
     a.extent == b.extent && a.size == b.size && a.partial == b.partial && a.pos == b.pos

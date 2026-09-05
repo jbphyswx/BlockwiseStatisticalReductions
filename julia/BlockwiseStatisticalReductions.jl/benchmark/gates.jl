@@ -7,6 +7,16 @@ using Random: Random
 #
 #   julia --project=benchmark benchmark/gates.jl [--only=group1,group2] [--list]
 #
+# Run these on an otherwise idle machine, and run each group in the process it describes:
+#
+#   julia --project=benchmark benchmark/gates.jl --only=kernels,kernels-f32,planner,executor
+#   julia -t8 --project=benchmark benchmark/gates.jl --only=threaded
+#
+# Every ratio is against a streaming reference measured in the same process, so a loaded machine inflates
+# both terms but not equally: a busy machine has been seen to push a kernel gate 30% above its quiet
+# value, and the serial groups measure 20-70% higher inside a multithreaded process than a single-threaded
+# one, whose allocator and garbage collector they are written against.
+#
 # Exit status is nonzero if any selected gate fails or if a selected group has no gates.
 
 struct Gate{R, FT}

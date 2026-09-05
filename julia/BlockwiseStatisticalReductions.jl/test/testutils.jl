@@ -36,3 +36,10 @@ function values_of(accs::BSR.AccumulatorArray, tag, ::Val{k}) where {k}
     return BSR.finalize!(Array{Float64}(undef, size(src)), src, tag, BSR.CB.SerialBackend())
 end
 values_of(accs::BSR.AccumulatorArray, tag) = BSR.finalize!(Array{Float64}(undef, size(accs)), accs, tag, BSR.CB.SerialBackend())
+
+using Adapt: Adapt
+
+# An accumulator array with its components copied to the host in bulk. Comparing two device accumulator
+# arrays directly would index them one cell at a time, which on a device array is both slow and, under
+# `allowscalar(false)`, an error.
+host_accumulators(aa::BSR.AccumulatorArray) = collect(Adapt.adapt(Array, aa))

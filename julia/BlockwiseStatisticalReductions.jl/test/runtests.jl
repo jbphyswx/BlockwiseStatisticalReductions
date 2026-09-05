@@ -11,4 +11,5 @@ Test.@testset "BlockwiseStatisticalReductions" begin
     include("test_execute.jl")
     include("test_api.jl")
     include("test_threaded.jl")
+    include("test_gpu.jl")
 end

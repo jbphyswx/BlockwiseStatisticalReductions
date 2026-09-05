@@ -31,7 +31,7 @@ seconds(c::Cost, l::KernelLimits) =
 
 # Bytes a node's storage occupies per cell (uniform counts are not stored).
 acc_cell_bytes(::Type{A}, uniform::Bool) where {A<:AbstractAccumulator} = sizeof(A) - (uniform ? _count_bytes(A) : 0)
-_count_bytes(::Type{A}) where {A} = sum(k -> fieldname(A, k) === :n ? sizeof(fieldtype(A, k)) : _count_bytes(fieldtype(A, k)), 1:fieldcount(A); init = 0)
+_count_bytes(::Type{A}) where {A<:AbstractAccumulator} = sum(k -> fieldname(A, k) === :n ? sizeof(fieldtype(A, k)) : _count_bytes(fieldtype(A, k)), 1:fieldcount(A); init = 0)
 _count_bytes(::Type{T}) where {T<:Tuple} = sum(_count_bytes, fieldtypes(T); init = 0)
 _count_bytes(::Type) = 0
 

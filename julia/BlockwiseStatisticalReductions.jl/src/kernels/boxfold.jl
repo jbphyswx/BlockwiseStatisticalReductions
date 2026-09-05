@@ -1,10 +1,26 @@
+"""
+    Shifted(field, shift)
+
+An input field read as `field[J] - shift`. Accumulating shifted observations keeps a large mean out of
+every difference the moment kernels take, so the accumulation eltype only has to resolve the spread of
+the data rather than its offset. [`unshift`](@ref) puts the offset back at finalize.
+"""
+struct Shifted{A<:AbstractArray,S}
+    field::A
+    shift::S
+end
+@inline value(f::AbstractArray, J::CartesianIndex) = @inbounds f[J]
+@inline value(f::Shifted, J::CartesianIndex) = (@inbounds f.field[J]) - f.shift
+Base.size(f::Shifted) = size(f.field)
+Base.eltype(::Type{Shifted{A,S}}) where {A,S} = promote_type(eltype(A), S)
+
 "Raw input fields read at an index and lifted into accumulators of type `A`."
 struct Lift{A<:AbstractAccumulator,F<:Tuple}
     fields::F
 end
 Lift{A}(fields::F) where {A,F<:Tuple} = Lift{A,F}(fields)
 
-@inline leaf(src::Lift{A}, J::CartesianIndex) where {A} = lift(A, map(f -> (@inbounds f[J]), src.fields))
+@inline leaf(src::Lift{A}, J::CartesianIndex) where {A} = lift(A, map(f -> value(f, J), src.fields))
 @inline leaf(src::AccumulatorArray, J::CartesianIndex) = @inbounds src[J]
 
 "`L` consecutive indices from `start`; the length is part of the type so box loops unroll."

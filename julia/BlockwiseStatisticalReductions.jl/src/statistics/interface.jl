@@ -121,6 +121,43 @@ component_view(::AbstractStatistic, ::Type{<:AbstractAccumulator}) = nothing
 "Default output eltype of a tag for input eltype `Tin`."
 result_eltype(::AbstractStatistic, ::Type{Tin}) where {Tin} = Tin
 
+"""
+    ratio_eltype(::Type{Tin}) -> Type
+
+Output eltype for statistics whose value is generally not representable in `Tin` (means, moments,
+correlations): the input eltype when it is already floating point, else the accumulation eltype.
+"""
+ratio_eltype(::Type{Tin}) where {Tin<:AbstractFloat} = Tin
+ratio_eltype(::Type{Tin}) where {Tin} = accumulation_eltype(Tin)
+
+"""
+    NoShift()
+
+The shift of a request that does not shift. Distinct from a zero shift so that [`unshift`](@ref) is a
+no-op by type rather than by value, for every accumulator including those with no `unshift` of their own.
+"""
+struct NoShift end
+Base.:-(x, ::NoShift) = x
+
+"""
+    unshift(a::A, shifts::Tuple) -> A
+
+The accumulator `a` would have been, had its observations not been shifted by `shifts` (one per bound
+field). Statistics of shifted data are accumulated so that a mean-sized offset never enters a
+difference: central moments are shift-invariant, means move by the shift.
+"""
+function unshift end
+@inline unshift(a::AbstractAccumulator, ::Tuple{NoShift,Vararg{NoShift}}) = a
+
+"""
+    shiftable(::Type{A}) -> Bool
+
+`true` when `A` has an [`unshift`](@ref), so its observations may be shifted before accumulating.
+False for accumulators of raw (uncentered) moments, whose un-shifting needs quantities they do not
+carry — they are also well conditioned without a shift, so they lose nothing.
+"""
+shiftable(::Type{<:AbstractAccumulator}) = false
+
 "`true` when an `A` can finalize every statistic a `B` can, for identical bindings."
 subsumes(::Type{A}, ::Type{A}) where {A<:AbstractAccumulator} = true
 subsumes(::Type{<:AbstractAccumulator}, ::Type{<:AbstractAccumulator}) = false

@@ -74,6 +74,7 @@ function _finish_expr(M, B)
     return _inline_composite(M, B, exprs)
 end
 _finish1_expr(M, B) = _inline_composite(M, B, _member_exprs(M, (k, Mk) -> :(finish($Mk, s1[$k], nothing, nothing))))
+_unshift_expr(M, B) = _inline_composite(M, B, _member_exprs(M, (k, Mk) -> :(unshift(a.members[$k], ($(map(j -> :(s[$j]), B[k])...),)))))
 
 @generated neutral(::Type{Composite{M,B}}) where {M,B} = _neutral_expr(M, B)
 @generated lift(::Type{Composite{M,B}}, xs::Tuple) where {M,B} = _lift_expr(M, B)
@@ -89,6 +90,8 @@ _finish1_expr(M, B) = _inline_composite(M, B, _member_exprs(M, (k, Mk) -> :(fini
 @generated p2merge(::Type{Composite{M,B}}, s, t) where {M,B} = _p2merge_expr(M)
 @generated finish(::Type{Composite{M,B}}, s1, ::Nothing, ::Nothing) where {M,B} = _finish1_expr(M, B)
 @generated finish(::Type{Composite{M,B}}, s1, m, s2) where {M,B} = _finish_expr(M, B)
+@generated unshift(a::Composite{M,B}, s::Tuple{Vararg{Real}}) where {M,B} = _unshift_expr(M, B)
+shiftable(::Type{Composite{M,B}}) where {M,B} = all(shiftable, fieldtypes(M))
 is_invertible(::Type{Composite{M,B}}) where {M,B} = all(is_invertible, fieldtypes(M))
 arity(::Type{Composite{M,B}}) where {M,B} = maximum(maximum, B)
 

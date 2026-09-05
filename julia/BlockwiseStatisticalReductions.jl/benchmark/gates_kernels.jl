@@ -1,35 +1,46 @@
 using ComputationalBackends: ComputationalBackends as CB
 
 # Serial kernel gates: ratio of kernel time to a streaming sum over the same input, accumulated in Float64.
-# Float32 inputs form their own group: with Float64 accumulation those kernels are compute-bound and fused
-# 32-bit lanes do not vectorize yet, so they are tracked separately from the Float64 acceptance gates.
+#
+# Float32 inputs form their own group and run the path the API takes by default: shifted observations
+# accumulated in Float32, which keeps full-width lanes and stays at Float32's own epsilon at any offset
+# (see `Shifted`). The per-element subtraction is not free, so these still sit above their Float64
+# counterparts; the thresholds guard the measured behaviour of that default path.
 
 const SERIAL = CB.SerialBackend()
 
 roofline64(A::AbstractArray) = (sum(Float64, A); best(() -> sum(Float64, A)))
 
+# Float64 input accumulates in Float64 against a Float64-accumulating roofline; Float32 input runs the
+# default shifted-narrow path against a Float32-accumulating one, so each ratio compares a kernel with
+# the streaming sum it could at best match.
 function base_gate(stats, sizes, T, threshold; label, nfields = 1)
-    gate(T === Float32 ? "kernels-f32" : "kernels", "$label $(T) tile $(sizes[1])x", threshold) do
+    shifted = T !== Float64
+    gate(shifted ? "kernels-f32" : "kernels", "$label $(T) tile $(sizes[1])x", threshold) do
         n = 4096
         fields = ntuple(_ -> randn(T, n, n), nfields)
         names = ntuple(i -> Symbol(:f, i), nfields)
         w = BSR.tiled((n, n), sizes, BSR.Truncate())
-        C, _, _, _ = BSR.assemble(stats, names, T, BSR.accumulation_eltype(T))
+        Tacc = shifted ? T : BSR.accumulation_eltype(T)
+        C, _, _, _ = BSR.assemble(stats, names, T, Tacc)
         out = BSR.AccumulatorArray(C, fields[1], BSR.shape(w); uniform = (n = prod(sizes),))
-        src = NamedTuple{names}(fields)
+        raw = NamedTuple{names}(fields)
+        src = shifted ? NamedTuple{names}(map(f -> BSR.Shifted(f, BSR.field_shift(f, T)), fields)) : raw
         BSR.boxfold!(out, src, w, SERIAL)
         t = best(() -> BSR.boxfold!(out, src, w, SERIAL))
-        base = sum(roofline64, fields)
+        base = shifted ? sum(f -> (sum(T, f); best(() -> sum(T, f))), fields) : sum(roofline64, fields)
         return t / base
     end
 end
 
-for T in (Float64, Float32)
-    base_gate((BSR.Mean(),), (8, 8), T, 1.25; label = "mean")
-    base_gate((BSR.Mean(),), (2, 2), T, 2.0; label = "mean")
-    base_gate((BSR.Mean(), BSR.Var()), (8, 8), T, 1.5; label = "mean+var")
-    base_gate((BSR.Mean(), BSR.Min(), BSR.Max()), (8, 8), T, 1.5; label = "mean+min+max")
-    base_gate((BSR.Cov(:f1, :f2),), (8, 8), T, 1.3; label = "cov", nfields = 2)
+# (Float64 acceptance threshold, Float32 guard on the default shifted-narrow path) per case.
+for (T, mean8, mean2, meanvar, meanminmax, cov) in ((Float64, 1.25, 2.0, 1.5, 1.5, 1.3),
+                                                    (Float32, 1.5, 2.0, 3.1, 3.0, 3.0))
+    base_gate((BSR.Mean(),), (8, 8), T, mean8; label = "mean")
+    base_gate((BSR.Mean(),), (2, 2), T, mean2; label = "mean")
+    base_gate((BSR.Mean(), BSR.Var()), (8, 8), T, meanvar; label = "mean+var")
+    base_gate((BSR.Mean(), BSR.Min(), BSR.Max()), (8, 8), T, meanminmax; label = "mean+min+max")
+    base_gate((BSR.Cov(:f1, :f2),), (8, 8), T, cov; label = "cov", nfields = 2)
 end
 
 gate("kernels", "coarsen 2x of a 2048² VarAcc array vs streaming its components", 1.3) do

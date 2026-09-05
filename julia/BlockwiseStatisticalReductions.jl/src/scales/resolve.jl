@@ -6,7 +6,7 @@ Windows requested by `spec` on an array of `shape`, deduplicated and sorted by v
 tuple, or windows. `spacing` (one `AxisSpacing` or `nothing` per axis) resolves `Length` bounds;
 `dimnames` matches a `NamedTuple` of generators to axes.
 """
-function resolve(spec::ScaleSet, shape::NTuple{N,Int}; spacing = nothing, dimnames = nothing) where {N}
+function resolve(spec::ScaleSet, shape::NTuple{N,Int}; edge::EdgePolicy = spec.edge, spacing = nothing, dimnames = nothing) where {N}
     gens = _axis_generators(spec.axes, Val(N), dimnames)
     sp = _axis_spacings(spacing, Val(N))
     sets = ntuple(d -> generate(gens[d], shape[d], sp[d]), Val(N))
@@ -19,7 +19,7 @@ function resolve(spec::ScaleSet, shape::NTuple{N,Int}; spacing = nothing, dimnam
     windows = Window{N}[]
     for sizes in unique(tuples)
         all(d -> 1 <= sizes[d] <= shape[d], 1:N) || continue
-        w = ntuple(d -> place(placements[d], shape[d], sizes[d], spec.edge), Val(N))
+        w = ntuple(d -> place(placements[d], shape[d], sizes[d], edge), Val(N))
         all(aw -> nwindows(aw) > 0, w) || continue
         spec.min_elements <= volume(w) <= spec.max_elements || continue
         spec.filter(w) || continue

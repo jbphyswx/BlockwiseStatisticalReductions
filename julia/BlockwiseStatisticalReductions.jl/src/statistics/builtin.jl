@@ -9,6 +9,8 @@ neutral(::Type{CountAcc}) = CountAcc(0)
 is_invertible(::Type{CountAcc}) = true
 @inline unmerge(ab::CountAcc, b::CountAcc) = CountAcc(ab.n - b.n)
 acc_eltype(::Type{CountAcc}) = Int
+shiftable(::Type{CountAcc}) = true
+@inline unshift(a::CountAcc, ::Tuple{Vararg{Real}}) = a
 
 struct Count{F} <: AbstractStatistic end
 Count(f = 1) = Count{f}()
@@ -64,11 +66,14 @@ is_invertible(::Type{<:MeanAcc}) = true
     return MeanAcc(na, (T(ab.n) * ab.mean - T(b.n) * b.mean) / T(na))
 end
 acc_eltype(::Type{MeanAcc{T}}) where {T} = T
+shiftable(::Type{<:MeanAcc}) = true
+@inline unshift(a::MeanAcc, s::Tuple{Vararg{Real}}) = MeanAcc(a.n, a.mean + s[1])
 
 struct Mean{F} <: AbstractStatistic end
 Mean(f = 1) = Mean{f}()
 bindings(::Mean{F}) where {F} = (F,)
 accumulator_type(::Mean, ::Type{Tin}, ::Type{Tacc}) where {Tin,Tacc} = MeanAcc{Tacc}
+result_eltype(::Mean, ::Type{Tin}) where {Tin} = ratio_eltype(Tin)
 name(::Mean{F}) where {F} = _named(:mean, (F,), (1,))
 @inline finalize(::Mean, a::MeanAcc, ::Type{Tout}) where {Tout} = Tout(a.mean)
 @inline finalize(::Sum, a::MeanAcc, ::Type{Tout}) where {Tout} = Tout(a.mean * a.n)
@@ -112,6 +117,8 @@ is_invertible(::Type{<:VarAcc}) = true
     return VarAcc(na, mean, ab.M2 - b.M2 - δ * δ * (T(na) * T(b.n) / T(ab.n)))
 end
 acc_eltype(::Type{VarAcc{T}}) where {T} = T
+shiftable(::Type{<:VarAcc}) = true
+@inline unshift(a::VarAcc, s::Tuple{Vararg{Real}}) = VarAcc(a.n, a.mean + s[1], a.M2)
 
 struct Var{C,F} <: AbstractStatistic end
 Var(f = 1; corrected::Bool = true) = Var{corrected,f}()
@@ -120,6 +127,7 @@ Std(f = 1; corrected::Bool = true) = Std{corrected,f}()
 bindings(::Var{C,F}) where {C,F} = (F,)
 bindings(::Std{C,F}) where {C,F} = (F,)
 accumulator_type(::Union{Var,Std}, ::Type{Tin}, ::Type{Tacc}) where {Tin,Tacc} = VarAcc{Tacc}
+result_eltype(::Union{Var,Std}, ::Type{Tin}) where {Tin} = ratio_eltype(Tin)
 name(::Var{C,F}) where {C,F} = _named(:var, (F,), (1,))
 name(::Std{C,F}) where {C,F} = _named(:std, (F,), (1,))
 @inline _denominator(::Val{true}, n::Int, ::Type{T}) where {T} = T(n - 1)
@@ -175,6 +183,8 @@ end
 @inline p2merge(::Type{<:CentralMomentsAcc}, s, t) = map(+, s, t)
 @inline finish(::Type{CentralMomentsAcc{T}}, s1, m, s2) where {T} = CentralMomentsAcc(s1[1], m, s2[1], s2[2], s2[3])
 acc_eltype(::Type{CentralMomentsAcc{T}}) where {T} = T
+shiftable(::Type{<:CentralMomentsAcc}) = true
+@inline unshift(a::CentralMomentsAcc, s::Tuple{Vararg{Real}}) = CentralMomentsAcc(a.n, a.mean + s[1], a.M2, a.M3, a.M4)
 
 struct CentralMoments{K,F} <: AbstractStatistic end
 CentralMoments(K::Integer, f = 1) = (2 <= K <= 4 || throw(ArgumentError("CentralMoments order must be 2, 3 or 4")); CentralMoments{Int(K),f}())
@@ -186,7 +196,8 @@ bindings(::CentralMoments{K,F}) where {K,F} = (F,)
 bindings(::Skewness{F}) where {F} = (F,)
 bindings(::Kurtosis{E,F}) where {E,F} = (F,)
 accumulator_type(::Union{CentralMoments,Skewness,Kurtosis}, ::Type{Tin}, ::Type{Tacc}) where {Tin,Tacc} = CentralMomentsAcc{Tacc}
-result_eltype(::CentralMoments{K}, ::Type{Tin}) where {K,Tin} = NTuple{K - 1,Tin}
+result_eltype(::Union{Skewness,Kurtosis}, ::Type{Tin}) where {Tin} = ratio_eltype(Tin)
+result_eltype(::CentralMoments{K}, ::Type{Tin}) where {K,Tin} = NTuple{K - 1,ratio_eltype(Tin)}
 name(::CentralMoments{K,F}) where {K,F} = _named(Symbol(:central_moments, K), (F,), (1,))
 name(::Skewness{F}) where {F} = _named(:skewness, (F,), (1,))
 name(::Kurtosis{E,F}) where {E,F} = _named(:kurtosis, (F,), (1,))
@@ -233,7 +244,7 @@ struct Moments{K,F} <: AbstractStatistic end
 Moments(K::Integer, f = 1) = (K >= 1 || throw(ArgumentError("Moments order must be ≥ 1")); Moments{Int(K),f}())
 bindings(::Moments{K,F}) where {K,F} = (F,)
 accumulator_type(::Moments{K}, ::Type{Tin}, ::Type{Tacc}) where {K,Tin,Tacc} = RawMomentsAcc{K,Tacc}
-result_eltype(::Moments{K}, ::Type{Tin}) where {K,Tin} = NTuple{K,Tin}
+result_eltype(::Moments{K}, ::Type{Tin}) where {K,Tin} = NTuple{K,ratio_eltype(Tin)}
 name(::Moments{K,F}) where {K,F} = _named(Symbol(:moments, K), (F,), (1,))
 @inline finalize(::Moments{J}, a::RawMomentsAcc{K,T}, ::Type{Tout}) where {J,K,T,Tout<:Tuple} =
     ntuple(k -> eltype(Tout)(a.S[k] / T(a.n)), Val(J))
@@ -270,8 +281,14 @@ neutral(::Type{ExtremaAcc{T}}) where {T} = ExtremaAcc(typemax(T), typemin(T))
 @inline Base.merge(a::MaxAcc{T}, b::MaxAcc{T}) where {T} = MaxAcc(_greater(a.m, b.m))
 @inline Base.merge(a::ExtremaAcc{T}, b::ExtremaAcc{T}) where {T} = ExtremaAcc(_lesser(a.lo, b.lo), _greater(a.hi, b.hi))
 acc_eltype(::Type{MinAcc{T}}) where {T} = T
+shiftable(::Type{<:MinAcc}) = true
+@inline unshift(a::MinAcc, s::Tuple{Vararg{Real}}) = MinAcc(a.m + s[1])
 acc_eltype(::Type{MaxAcc{T}}) where {T} = T
+shiftable(::Type{<:MaxAcc}) = true
+@inline unshift(a::MaxAcc, s::Tuple{Vararg{Real}}) = MaxAcc(a.m + s[1])
 acc_eltype(::Type{ExtremaAcc{T}}) where {T} = T
+shiftable(::Type{<:ExtremaAcc}) = true
+@inline unshift(a::ExtremaAcc, s::Tuple{Vararg{Real}}) = ExtremaAcc(a.lo + s[1], a.hi + s[1])
 
 struct Min{F} <: AbstractStatistic end
 Min(f = 1) = Min{f}()
@@ -319,6 +336,7 @@ struct ProductMean{F1,F2} <: AbstractStatistic end
 ProductMean(f1 = 1, f2 = 2) = ProductMean{f1,f2}()
 bindings(::ProductMean{F1,F2}) where {F1,F2} = (F1, F2)
 accumulator_type(::ProductMean, ::Type{Tin}, ::Type{Tacc}) where {Tin,Tacc} = ProductSumAcc{Tacc}
+result_eltype(::ProductMean, ::Type{Tin}) where {Tin} = ratio_eltype(Tin)
 name(::ProductMean{F1,F2}) where {F1,F2} = _named(:product_mean, (F1, F2), (1, 2))
 @inline finalize(::ProductMean, a::ProductSumAcc{T}, ::Type{Tout}) where {T,Tout} = Tout(a.s / T(a.n))
 
@@ -359,11 +377,14 @@ is_invertible(::Type{<:CovAcc}) = true
     return CovAcc(na, mean1, mean2, ab.C - b.C - (b.mean1 - mean1) * (b.mean2 - mean2) * (T(na) * T(b.n) / T(ab.n)))
 end
 acc_eltype(::Type{CovAcc{T}}) where {T} = T
+shiftable(::Type{<:CovAcc}) = true
+@inline unshift(a::CovAcc, s::Tuple{Vararg{Real}}) = CovAcc(a.n, a.mean1 + s[1], a.mean2 + s[2], a.C)
 
 struct Cov{C,F1,F2} <: AbstractStatistic end
 Cov(f1 = 1, f2 = 2; corrected::Bool = true) = Cov{corrected,f1,f2}()
 bindings(::Cov{C,F1,F2}) where {C,F1,F2} = (F1, F2)
 accumulator_type(::Cov, ::Type{Tin}, ::Type{Tacc}) where {Tin,Tacc} = CovAcc{Tacc}
+result_eltype(::Cov, ::Type{Tin}) where {Tin} = ratio_eltype(Tin)
 name(::Cov{C,F1,F2}) where {C,F1,F2} = _named(:cov, (F1, F2), (1, 2))
 @inline finalize(::Cov{C}, a::CovAcc{T}, ::Type{Tout}) where {C,T,Tout} = Tout(a.C / _denominator(Val(C), a.n, T))
 @inline finalize(::ProductMean, a::CovAcc{T}, ::Type{Tout}) where {T,Tout} = Tout(a.C / T(a.n) + a.mean1 * a.mean2)
@@ -408,11 +429,14 @@ end
 @inline p2merge(::Type{<:CorrAcc}, s, t) = map(+, s, t)
 @inline finish(::Type{CorrAcc{T}}, s1, m, s2) where {T} = CorrAcc(s1[1], m[1], m[2], s2[1], s2[2], s2[3])
 acc_eltype(::Type{CorrAcc{T}}) where {T} = T
+shiftable(::Type{<:CorrAcc}) = true
+@inline unshift(a::CorrAcc, s::Tuple{Vararg{Real}}) = CorrAcc(a.n, a.mean1 + s[1], a.mean2 + s[2], a.M2_1, a.M2_2, a.C)
 
 struct Corr{F1,F2} <: AbstractStatistic end
 Corr(f1 = 1, f2 = 2) = Corr{f1,f2}()
 bindings(::Corr{F1,F2}) where {F1,F2} = (F1, F2)
 accumulator_type(::Corr, ::Type{Tin}, ::Type{Tacc}) where {Tin,Tacc} = CorrAcc{Tacc}
+result_eltype(::Corr, ::Type{Tin}) where {Tin} = ratio_eltype(Tin)
 name(::Corr{F1,F2}) where {F1,F2} = _named(:corr, (F1, F2), (1, 2))
 @inline finalize(::Corr, a::CorrAcc{T}, ::Type{Tout}) where {T,Tout} = Tout(a.C / sqrt(a.M2_1 * a.M2_2))
 @inline finalize(::Cov{C}, a::CorrAcc{T}, ::Type{Tout}) where {C,T,Tout} = Tout(a.C / _denominator(Val(C), a.n, T))

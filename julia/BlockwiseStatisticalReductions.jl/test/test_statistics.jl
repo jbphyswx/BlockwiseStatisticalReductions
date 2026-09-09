@@ -10,10 +10,12 @@ const ALL_ACCS = (
     BSR.CountAcc, BSR.SumAcc{Float64}, BSR.MeanAcc{Float64}, BSR.VarAcc{Float64}, BSR.CentralMomentsAcc{Float64},
     BSR.RawMomentsAcc{4,Float64}, BSR.MinAcc{Float64}, BSR.MaxAcc{Float32}, BSR.ExtremaAcc{Float64},
     BSR.ProductSumAcc{Float64}, BSR.CovAcc{Float64}, BSR.CorrAcc{Float64},
+    BSR.CoMomentAcc{3,BSR.ncomoments(3),Float64}, BSR.CoMomentAcc{4,BSR.ncomoments(4),Float64},
     BSR.Composite{Tuple{BSR.VarAcc{Float64},BSR.MinAcc{Float64},BSR.CovAcc{Float64}},((1,), (1,), (1, 2))},
 )
 
-samples_for(::Type{A}) where {A} = BSR.arity(A) == 1 ? randn(64) : [(randn(), randn()) for _ in 1:64]
+samples_for(::Type{A}) where {A} =
+    (k = BSR.arity(A); k == 1 ? randn(64) : [ntuple(_ -> randn(), k) for _ in 1:64])
 
 # BigFloat reference of the population moments of `x` (and cross moment with `y`).
 function reference(x::AbstractVector, y::AbstractVector = x)
@@ -93,6 +95,60 @@ Test.@testset "statistics algebra" begin
                 end
             end
         end
+    end
+
+    Test.@testset "central co-moments" begin
+        n = 4000
+        x = randn(n) .* 2 .+ 5
+        y = 0.7 .* x .+ randn(n)
+        z = randn(n) .- 0.3 .* y
+        cols = (BigFloat.(x), BigFloat.(y), BigFloat.(z))
+        mus = map(c -> sum(c) / n, cols)
+        # Exact ⟨∏(xₖ - x̄ₖ)⟩ over the given slots.
+        want(slots) = sum(prod(cols[k][i] - mus[k] for k in slots) for i in 1:n) / n
+
+        for slots in ((1, 2, 3), (1, 1, 2), (1, 2, 2), (1, 1, 1), (1, 1, 2, 3), (1, 2, 3, 3))
+            A = BSR.CoMomentAcc{length(slots),BSR.ncomoments(length(slots)),Float64}
+            obs = [ntuple(j -> (x, y, z)[slots[j]][i], length(slots)) for i in 1:n]
+            tag = BSR.CoMoment(slots)
+            for acc in (foldl(merge, (BSR.lift(A, o) for o in obs)), tree_fold(A, obs),
+                        BSR.combine(A, [foldl(merge, (BSR.lift(A, obs[i]) for i in lo:min(lo + 199, n)))
+                                        for lo in 1:200:n]))
+                Test.@test acc.n == n
+                Test.@test BSR.finalize(tag, acc, Float64) ≈ Float64(want(slots)) rtol = 1e-9
+            end
+        end
+
+        # A repeated slot is the same thing as a power, and a single field repeated is a central moment.
+        A3 = BSR.CoMomentAcc{3,BSR.ncomoments(3),Float64}
+        cube = foldl(merge, (BSR.lift(A3, (xi, xi, xi)) for xi in x))
+        cm = foldl(merge, (BSR.lift(BSR.CentralMomentsAcc{Float64}, (xi,)) for xi in x))
+        Test.@test BSR.finalize(BSR.CoMoment((1,), (3,)), cube, Float64) ≈
+                   BSR.finalize(BSR.CentralMoments(3), cm, NTuple{2,Float64})[2]
+        # Its pairwise sub-moments are the variances and covariances of the slots.
+        abc = foldl(merge, (BSR.lift(A3, o) for o in zip(x, y, z)))
+        pairs = BSR.comoment_subsets(3)
+        for (i, s) in enumerate(pairs)
+            length(s) == 2 || continue
+            Test.@test abc.M[i] / n ≈ Float64(want((s[1], s[2]))) rtol = 1e-9
+        end
+
+        # Accumulating the data centred, as a shifted request does: the co-moment is unchanged and
+        # `unshift` puts the offset back into the means.
+        s = 1e3
+        centred = foldl(merge, (BSR.lift(A3, (xi - s, yi, zi)) for (xi, yi, zi) in zip(x, y, z)))
+        Test.@test BSR.shiftable(A3)
+        Test.@test BSR.unshift(centred, (s, 0.0, 0.0)).means[1] ≈ abc.means[1] atol = 1e-9
+        Test.@test BSR.finalize(BSR.CoMoment((1, 2, 3)), centred, Float64) ≈
+                   BSR.finalize(BSR.CoMoment((1, 2, 3)), abc, Float64) rtol = 1e-7
+
+        Test.@test_throws ArgumentError BSR.CoMoment((1, 2))
+        Test.@test_throws ArgumentError BSR.CoMoment((1,), (2,))
+        Test.@test_throws ArgumentError BSR.CoMoment((1, 2), (1, 1, 1))
+        Test.@test_throws ArgumentError BSR.CoMoment((1, 2), (0, 3))
+        Test.@test BSR.arity(A3) == 3
+        Test.@test BSR.ncomoments(3) == 4 && BSR.ncomoments(4) == 11
+        Test.@test BSR.comoment_subsets(3) == [[1, 2], [1, 3], [2, 3], [1, 2, 3]]
     end
 
     Test.@testset "k-ary merge equals pairwise merge" begin

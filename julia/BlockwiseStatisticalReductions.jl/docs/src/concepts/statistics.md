@@ -34,10 +34,32 @@ cancellation-prone form the [numerics](numerics.md) policy rules out.
 | `Cov(i, j; corrected)` | two fields | covariance |
 | `Corr(i, j)` | two fields | correlation |
 | `ProductMean(i, j)` | two fields | ⟨xy⟩ |
+| `CoMoment(fields[, exponents])` | any number of fields | ⟨∏(x - x̄)ᵖ⟩ |
 | `Component(tag, field)` | as `tag` | one raw accumulator field |
 
 `corrected` takes `true` (the default, dividing by `n - 1`), `false` (dividing by `n`), or — for weighted
 requests — `:frequency` and `:reliability`. See [weights](weights.md).
+
+## Central moments across fields
+
+`CoMoment` covers the central moments that mix several fields, or raise one field to a power inside a
+cross-moment:
+
+```julia
+CoMoment((:u, :v, :w))         # ⟨u′v′w′⟩
+CoMoment((:u, :w), (2, 1))     # ⟨u′²w′⟩
+```
+
+An exponent simply repeats its field, so both of those are third-order moments over three slots and one
+accumulator serves them. The accumulator carries the count, a mean per slot, and the co-moment of every
+subset of the slots of size two or more; merging re-expresses each part's moments about the pooled means,
+which is the same Pébay expansion `CentralMoments` uses in one dimension. Any order of three or more
+works — use `Cov` for two fields at second order and `CentralMoments` for one field, so each moment has
+exactly one spelling.
+
+Reconstructing `⟨a′b′c′⟩` from raw product means instead would need `⟨abc⟩ - ā⟨bc⟩ - b̄⟨ac⟩ - c̄⟨ab⟩ + 2āb̄c̄`,
+which is the cancellation-prone difference of raw moments the [numerics](numerics.md) policy rules out —
+and raw power sums cannot be shifted, so it fails in exactly the regime shifting exists for.
 
 `Component` is the escape hatch for the numerators themselves: `Component(Var(), :M2)` is `Σ(x - x̄)²` and
 `Component(Cov(:u, :w), :C)` is `Σ(u - ū)(w - w̄)`, which is what you want when the results will be merged

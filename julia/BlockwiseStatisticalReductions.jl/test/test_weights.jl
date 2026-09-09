@@ -209,10 +209,6 @@ Test.@testset "weights" begin
         end
     end
 
-    # `@allocated` at a call site whose argument types are not known boxes the arguments; the barrier
-    # keeps the measurement about the call itself.
-    measure(p, x) = @allocated BSR.blockstats!(p, x)
-
     Test.@testset "prepared requests stay allocation-free" begin
         x = randn(64, 64); ω = rand(64, 64) .+ 0.5; wv = rand(64) .+ 0.5
         st = (m = BSR.Mean(), v = BSR.Var())

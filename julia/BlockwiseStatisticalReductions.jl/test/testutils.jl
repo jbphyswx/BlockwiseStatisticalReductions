@@ -21,6 +21,20 @@ function brute2(f, x::AbstractArray{T,N}, y::AbstractArray{T,N}, w::BSR.Window{N
     return out
 end
 
+# Brute-force reference for a three-field statistic.
+function brute3(f, x::AbstractArray{T,N}, y::AbstractArray{T,N}, z::AbstractArray{T,N}, w::BSR.Window{N}) where {T,N}
+    out = Array{Float64,N}(undef, BSR.shape(w))
+    for I in CartesianIndices(out)
+        rngs = ntuple(d -> BSR.window_range(w[d], I[d]), N)
+        out[I] = f(vec(collect(view(x, rngs...))), vec(collect(view(y, rngs...))), vec(collect(view(z, rngs...))))
+    end
+    return out
+end
+
+# `@allocated` at a call site whose argument types are not known boxes the arguments; the barrier keeps
+# the measurement about the call itself.
+measure(p, fields) = @allocated BSR.blockstats!(p, fields)
+
 # Elementwise approximate equality that treats NaN == NaN (undefined statistics of tiny windows).
 function approx_nan(a::AbstractArray, b::AbstractArray; rtol = 1e-9, atol = 0.0)
     size(a) == size(b) || return false

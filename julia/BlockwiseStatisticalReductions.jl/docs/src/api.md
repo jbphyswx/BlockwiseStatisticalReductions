@@ -89,6 +89,10 @@ BlockwiseStatisticalReductions.ratio_eltype
 BlockwiseStatisticalReductions.check_monoid
 BlockwiseStatisticalReductions.Composite
 BlockwiseStatisticalReductions.assemble
+BlockwiseStatisticalReductions.CoMoment
+BlockwiseStatisticalReductions.CoMomentAcc
+BlockwiseStatisticalReductions.comoment_subsets
+BlockwiseStatisticalReductions.ncomoments
 ```
 
 ## Weights

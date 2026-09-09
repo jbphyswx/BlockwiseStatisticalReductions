@@ -28,7 +28,7 @@ function _run_finalizers!(steps::Vector{Any}, shifts::Tuple, backend)
     return nothing
 end
 
-struct Prepared{N,C<:AbstractAccumulator,ST<:Tuple,RT<:Tuple,BK,WS,R<:ScaleResults{N},SH,WT,SK,RD}
+struct Prepared{N,C<:AbstractAccumulator,ST<:Tuple,RT<:Tuple,BK,WS,R<:ScaleResults{N},SH,WT,SK,RD,F}
     plan::Plan{N}
     workspace::WS
     stats::ST
@@ -40,7 +40,7 @@ struct Prepared{N,C<:AbstractAccumulator,ST<:Tuple,RT<:Tuple,BK,WS,R<:ScaleResul
     weights::WT
     skipnan::SK
     reads::RD
-    fieldnames::NTuple{<:Any,Symbol}
+    fieldnames::NTuple{F,Symbol}
     input_shape::NTuple{N,Int}
     in_bytes::Int
 end
@@ -140,7 +140,7 @@ function prepare_on(fields, scales, backend::CB.AbstractLocalBackend; stats::Uni
     finalizers = _finalize_steps(p, ws, result, tags, routing, used, names)
     skip = Val(skipnan)
     return Prepared{N,C,typeof(tags),typeof(routing),typeof(backend),typeof(ws),typeof(result),typeof(sh),
-                    typeof(wsrc),typeof(skip),typeof(reads)}(
+                    typeof(wsrc),typeof(skip),typeof(reads),length(names)}(
         p, ws, tags, routing, backend, result, finalizers, sh, wsrc, skip, reads, names, shape, in_bytes)
 end
 

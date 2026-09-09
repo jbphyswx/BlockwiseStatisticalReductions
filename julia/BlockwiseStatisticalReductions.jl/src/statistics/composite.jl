@@ -40,7 +40,7 @@ _lift_expr(M, B) = _inline_composite(M, B, _member_exprs(M, (k, Mk) -> :(lift($M
 _merge_expr(M, B) = _inline_composite(M, B, _member_exprs(M, (k, Mk) -> :(merge(a.members[$k], b.members[$k]))))
 _unmerge_expr(M, B) = _inline_composite(M, B, _member_exprs(M, (k, Mk) -> :(unmerge(ab.members[$k], b.members[$k]))))
 function _lift_skipping_expr(M, B)
-    exprs = Any[]
+    exprs = Expr[]
     for k in 1:fieldcount(M)
         vals = Expr(:tuple, [:(xs[$j]) for j in B[k]]...)
         push!(exprs, :(lift_skipping($(fieldtype(M, k)), $vals)))

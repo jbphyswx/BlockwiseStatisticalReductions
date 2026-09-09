@@ -59,7 +59,7 @@ _component(::Type{T}, comps, k) where {T} =
 
 function _read_expr(::Type{T}, comps) where {T}
     _has_leaves(T) || return :(_load($comps, i))
-    fields = Any[_read_expr(fieldtype(T, k), _component(T, comps, k)) for k in 1:fieldcount(T)]
+    fields = Expr[_read_expr(fieldtype(T, k), _component(T, comps, k)) for k in 1:fieldcount(T)]
     return T <: Tuple ? Expr(:tuple, fields...) : Expr(:call, T, fields...)
 end
 function _write_exprs!(out, ::Type{T}, comps, val) where {T}
@@ -82,7 +82,7 @@ end
 @generated function _write!(::Type{A}, comps::NamedTuple, a, i) where {A<:AbstractAccumulator}
     return quote
         Base.@_inline_meta
-        $(_write_exprs!(Any[], A, :comps, :a)...)
+        $(_write_exprs!(Expr[], A, :comps, :a)...)
         return nothing
     end
 end

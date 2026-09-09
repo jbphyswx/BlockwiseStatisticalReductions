@@ -1,7 +1,11 @@
 # BlockwiseStatisticalReductions.jl
 
-Mergeable statistics of an N-dimensional tensor over **many window sizes at once**, computed by a planned
-tree of reductions that touches the data as close to once as possible — on CPU, GPU, and across processes.
+*Mergeable statistics of an N-dimensional tensor over **many window sizes at once**, computed by a planned
+tree of reductions that touches the data as close to once as possible — on CPU, GPU, and across processes.*
+
+[![Build Status](https://github.com/jbphyswx/BlockwiseStatisticalReductions/actions/workflows/CI.yml/badge.svg)](https://github.com/jbphyswx/BlockwiseStatisticalReductions/actions/workflows/CI.yml)
+[![Dev Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://jbphyswx.github.io/BlockwiseStatisticalReductions/dev/)
+[![Coverage](https://codecov.io/gh/jbphyswx/BlockwiseStatisticalReductions/branch/main/graph/badge.svg)](https://codecov.io/gh/jbphyswx/BlockwiseStatisticalReductions)
 
 ```julia
 using BlockwiseStatisticalReductions
@@ -76,8 +80,8 @@ Pkg.add(url = "https://github.com/jbphyswx/BlockwiseStatisticalReductions", subd
 ## Documentation
 
 Concepts, worked examples and the API reference are in `docs/`; build them with
-`julia --project=docs docs/make.jl`. Runnable scripts live in [`examples/`](examples). Upgrading from the previous
-implementation is covered in [`MIGRATION.md`](MIGRATION.md), and [`AGENTS.md`](AGENTS.md) describes the layering.
+`julia --project=docs docs/make.jl`. Runnable scripts live in [`examples/`](examples), and
+[`AGENTS.md`](AGENTS.md) describes the layering.
 
 A Python implementation of the same idea lives in `python/` at the repository root; it is independent of
 this package.

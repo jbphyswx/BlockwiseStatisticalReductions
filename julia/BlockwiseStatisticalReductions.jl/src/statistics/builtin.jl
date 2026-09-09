@@ -231,6 +231,7 @@ subsumes(::Type{<:CentralMomentsAcc}, ::Type{CountAcc}) = true
 struct RawMomentsAcc{K,T} <: AbstractAccumulator
     n::Int
     S::NTuple{K,T}
+    RawMomentsAcc{K,T}(n::Integer, S::Tuple) where {K,T} = new{K,T}(n, S)
 end
 neutral(::Type{RawMomentsAcc{K,T}}) where {K,T} = RawMomentsAcc{K,T}(0, ntuple(_ -> zero(T), Val(K)))
 @inline function lift(::Type{RawMomentsAcc{K,T}}, xs::Tuple) where {K,T}
@@ -469,6 +470,7 @@ struct CoMomentAcc{K,L,T} <: AbstractAccumulator
     n::Int
     means::NTuple{K,T}
     M::NTuple{L,T}
+    CoMomentAcc{K,L,T}(n::Integer, means::Tuple, M::Tuple) where {K,L,T} = new{K,L,T}(n, means, M)
 end
 arity(::Type{<:CoMomentAcc{K}}) where {K} = K
 acc_eltype(::Type{<:CoMomentAcc{K,L,T}}) where {K,L,T} = T

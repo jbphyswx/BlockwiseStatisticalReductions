@@ -3,11 +3,13 @@ using Random: Random
 using Statistics: Statistics
 using KernelAbstractions: KernelAbstractions as KA
 using JLArrays: JLArray
+using GPUArraysCore: GPUArraysCore
 using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions as BSR
 using ComputationalBackends: ComputationalBackends as CB
-include("testutils.jl")
 
 Random.seed!(41)
+# Reaching into a device array one element at a time is a defect
+GPUArraysCore.allowscalar(false)
 const SERIAL_G = CB.SerialBackend()
 # KA's CPU backend runs the same kernels on host arrays; JLArray is a device array type whose storage,
 # launches and adaptions behave like a GPU's without needing one. Between them these cover the kernels

@@ -1,6 +1,10 @@
 using Test: Test
 using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions
 
+# The shared brute-force references, once for every file below. To run one file on its own, include this
+# first: `include("test/testutils.jl"); include("test/test_api.jl")`.
+include("testutils.jl")
+
 Test.@testset "BlockwiseStatisticalReductions" begin
     include("test_quality.jl")
     include("test_statistics.jl")

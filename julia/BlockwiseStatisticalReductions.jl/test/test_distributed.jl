@@ -3,7 +3,6 @@ using Random: Random
 using Distributed: Distributed
 using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions as BSR
 using ComputationalBackends: ComputationalBackends as CB
-include("testutils.jl")
 
 # Workers of our own when the process was not started with any, so this file runs either way.
 const ADDED = Distributed.nworkers() == 1 && Distributed.workers() == [Distributed.myid()] ?

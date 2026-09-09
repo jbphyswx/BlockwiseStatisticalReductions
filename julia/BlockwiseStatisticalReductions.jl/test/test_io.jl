@@ -4,7 +4,6 @@ using Statistics: Statistics
 using NCDatasets: NCDatasets as NC
 using Zarr: Zarr
 using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions as BSR
-include("testutils.jl")
 
 Random.seed!(71)
 

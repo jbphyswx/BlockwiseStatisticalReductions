@@ -1,9 +1,6 @@
 using Documenter: Documenter
 using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions
 
-# The migration note lives at the repository root, where someone upgrading will look for it.
-cp(joinpath(@__DIR__, "..", "MIGRATION.md"), joinpath(@__DIR__, "src", "migration.md"); force = true)
-
 Documenter.makedocs(;
     modules = [BlockwiseStatisticalReductions],
     sitename = "BlockwiseStatisticalReductions.jl",
@@ -27,7 +24,6 @@ Documenter.makedocs(;
             "Partitioned tensors" => "concepts/distributed.md",
         ],
         "Performance" => "performance.md",
-        "Migrating" => "migration.md",
         "API reference" => "api.md",
     ],
 )

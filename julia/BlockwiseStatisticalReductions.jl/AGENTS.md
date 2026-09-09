@@ -94,4 +94,3 @@ join are the same order as the work: the threaded base-pass gates measured 1.09�
 - `docs/generate_assets/` — a separate environment that writes the figures into `docs/src/assets/`. Run it
   by hand and commit the images; the docs build itself takes no measurements and needs no plotting stack.
 - `examples/` — runnable scripts, a workspace member, executed by CI.
-- `MIGRATION.md` — maps the previous implementation onto this one, copied into the docs at build time.

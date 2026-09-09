@@ -4,7 +4,6 @@ using Statistics: Statistics
 using OhMyThreads: OhMyThreads
 using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions as BSR
 using ComputationalBackends: ComputationalBackends as CB
-include("testutils.jl")
 
 Random.seed!(31)
 const THREADED = CB.ThreadedBackend()

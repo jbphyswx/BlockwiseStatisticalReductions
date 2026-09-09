@@ -1,6 +1,10 @@
 # BlockwiseStatisticalReductions
 
-N-dimensional blockwise and rolling-window statistical reductions, over **many window sizes at once**.
+*N-dimensional blockwise and rolling-window statistical reductions, over **many window sizes at once**.*
+
+[![Build Status](https://github.com/jbphyswx/BlockwiseStatisticalReductions/actions/workflows/CI.yml/badge.svg)](https://github.com/jbphyswx/BlockwiseStatisticalReductions/actions/workflows/CI.yml)
+[![Dev Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://jbphyswx.github.io/BlockwiseStatisticalReductions/dev/)
+[![Coverage](https://codecov.io/gh/jbphyswx/BlockwiseStatisticalReductions/branch/main/graph/badge.svg)](https://codecov.io/gh/jbphyswx/BlockwiseStatisticalReductions)
 
 Two independent implementations live here:
 
@@ -42,8 +46,7 @@ and product mean — statistics of different fields fuse into one pass. Labelled
 sizes, weights, NaN skipping, and `DimArray`/NetCDF/Zarr inputs are all supported.
 
 See [`julia/BlockwiseStatisticalReductions.jl/README.md`](julia/BlockwiseStatisticalReductions.jl/README.md)
-for details, [`examples/`](julia/BlockwiseStatisticalReductions.jl/examples) for runnable scripts, and
-[`MIGRATION.md`](julia/BlockwiseStatisticalReductions.jl/MIGRATION.md) if you used version 0.1.
+for details and [`examples/`](julia/BlockwiseStatisticalReductions.jl/examples) for runnable scripts.
 
 ```julia
 import Pkg

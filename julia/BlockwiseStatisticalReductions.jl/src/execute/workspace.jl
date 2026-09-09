@@ -89,7 +89,8 @@ _like(proto::AbstractArray, v::AbstractRange) = v
 _like(proto::AbstractArray, v::AbstractVector) = copyto!(similar(proto, eltype(v), size(v)), v)
 _like(proto::AbstractArray, p::Progression) = p
 _like(proto::AbstractArray, p::Origins) = (v = _like(proto, p.origins); Origins{typeof(v)}(v))
-_like(proto::AbstractArray, aw::AxisWindow) = AxisWindow(aw.extent, aw.size, _like(proto, aw.pos), aw.partial)
+_like(proto::AbstractArray, aw::AxisWindow) =
+    (p = _like(proto, aw.pos); AxisWindow{typeof(p)}(aw.extent, aw.size, p, aw.partial))
 _like(proto::AbstractArray, w::Tuple) = map(x -> _like(proto, x), w)
 
 # One component array of a node's storage, or `nothing` when every component is uniform (a count-only

@@ -3,7 +3,6 @@ using Random: Random
 using Statistics: Statistics
 using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions as BSR
 using ComputationalBackends: ComputationalBackends as CB
-include("testutils.jl")
 
 Random.seed!(21)
 

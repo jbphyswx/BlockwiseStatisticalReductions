@@ -4,7 +4,6 @@ using Statistics: Statistics
 using DimensionalData: DimensionalData as DD
 using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions as BSR
 using ComputationalBackends: ComputationalBackends as CB
-include("testutils.jl")
 
 Random.seed!(61)
 
@@ -60,7 +59,7 @@ Test.@testset "labeled axes" begin
         Test.@test parent(st.mean) ≈ brute(Statistics.mean, parent(A), w8)
         Test.@test parent(st.var) ≈ brute(Statistics.var, parent(A), w8)
         # the coarsened axes are intervals spanning exactly the cells each window covered
-        Test.@test map(DD.dim2key, DD.dims(st)) == (:X, :Y)
+        Test.@test map(DD.name, DD.dims(st)) == (:X, :Y)
         Test.@test DD.bounds(st, 1) == (-0.25, 31.75)          # the input's own extent, cells centred on points
         Test.@test DD.sampling(DD.lookup(st, 1)) isa DD.Intervals
         xb = DD.val(DD.span(DD.lookup(st, 1)))

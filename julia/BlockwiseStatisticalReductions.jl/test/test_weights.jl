@@ -4,7 +4,6 @@ using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions as BSR
 using ComputationalBackends: ComputationalBackends as CB
 using OhMyThreads: OhMyThreads
 using KernelAbstractions: KernelAbstractions as KA
-include("testutils.jl")
 
 Random.seed!(31)
 

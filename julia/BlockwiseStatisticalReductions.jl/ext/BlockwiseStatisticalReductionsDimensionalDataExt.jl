@@ -9,7 +9,7 @@ module BlockwiseStatisticalReductionsDimensionalDataExt
 using DimensionalData: DimensionalData as DD
 using BlockwiseStatisticalReductions: BlockwiseStatisticalReductions as BSR
 
-_names(A) = map(DD.dim2key, DD.dims(A))
+_names(A) = map(DD.name, DD.dims(A))
 
 # The spacing of an axis, as cell edges. A lookup that already describes intervals states its own
 # bounds; points are treated as cell centres, with edges at the midpoints between them.
@@ -86,7 +86,7 @@ function BSR.prepare(A::DD.AbstractDimStack, scales; dimnames = nothing, spacing
     dims = DD.dims(A)
     fields = NamedTuple{keys(A)}(map(parent, values(A)))
     inner = BSR.prepare(fields, scales;
-                        dimnames = dimnames === nothing ? map(DD.dim2key, dims) : dimnames,
+                        dimnames = dimnames === nothing ? map(DD.name, dims) : dimnames,
                         spacing = spacing === nothing ? map(_spacing, dims) : spacing, kwargs...)
     return DimPrepared(inner, dims)
 end

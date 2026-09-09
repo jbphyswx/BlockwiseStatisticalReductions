@@ -64,12 +64,17 @@ _has_origin(p::Origins, o::Int) = insorted(o, p.origins)
 
 Windows of `size` cells at origins `pos` along an axis of `extent` cells. With `partial == false` every
 window lies inside the axis; with `partial == true` the trailing windows may be clipped at the extent.
+
+`AxisWindow{P}(extent, size, pos, partial)` rebuilds a window whose parts are already known good, such as
+one whose origins have been moved to a device; reading them back to check would be a host index.
 """
 struct AxisWindow{P<:Positions}
     extent::Int
     size::Int
     pos::P
     partial::Bool
+    AxisWindow{P}(extent::Integer, size::Integer, pos::P, partial::Bool) where {P<:Positions} =
+        new{P}(extent, size, pos, partial)
     function AxisWindow(extent::Integer, size::Integer, pos::P, partial::Bool) where {P<:Positions}
         extent >= 0 || throw(ArgumentError("extent must be ≥ 0, got $extent"))
         size >= 1 || throw(ArgumentError("window size must be ≥ 1, got $size"))
@@ -85,7 +90,8 @@ const Window{N} = NTuple{N,AxisWindow}
 
 # Explicit origins live in an array, so a window only reaches a device kernel after adapting.
 Adapt.adapt_structure(to, p::Origins) = (v = Adapt.adapt(to, p.origins); Origins{typeof(v)}(v))
-Adapt.adapt_structure(to, aw::AxisWindow) = AxisWindow(aw.extent, aw.size, Adapt.adapt(to, aw.pos), aw.partial)
+Adapt.adapt_structure(to, aw::AxisWindow) =
+    (p = Adapt.adapt(to, aw.pos); AxisWindow{typeof(p)}(aw.extent, aw.size, p, aw.partial))
 
 Base.:(==)(a::AxisWindow, b::AxisWindow) =
     a.extent == b.extent && a.size == b.size && a.partial == b.partial && a.pos == b.pos

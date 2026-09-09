@@ -24,15 +24,18 @@ to a device alongside the data it addresses; the checked constructor builds the 
 """
 struct Origins{V<:AbstractVector{Int}} <: Positions
     origins::V
+    # The trailing origin, kept alongside the list because it is the only element host code reads and the
+    # list may live on a device, where reading one element is an error.
+    last::Int
     # Declared so no unchecked outer constructor is generated; the checked one below is the way in, and
     # this parametric form is for moving an already-checked list to another array type.
-    Origins{V}(origins::V) where {V<:AbstractVector{Int}} = new{V}(origins)
+    Origins{V}(origins::V, last::Int) where {V<:AbstractVector{Int}} = new{V}(origins, last)
 end
 function Origins(origins::AbstractVector{<:Integer})
     v = Vector{Int}(origins)
     (isempty(v) || v[1] >= 0) || throw(ArgumentError("origins must be ≥ 0"))
     all(i -> v[i] < v[i+1], 1:length(v)-1) || throw(ArgumentError("origins must be strictly increasing"))
-    return Origins{Vector{Int}}(v)
+    return Origins{Vector{Int}}(v, isempty(v) ? -1 : v[end])
 end
 
 "Origins of a `Positions` as an `AbstractVector{Int}`."
@@ -43,6 +46,9 @@ nwindows(p::Origins) = length(p.origins)
 "The `i`-th origin."
 @inline origin(p::Progression, i::Integer) = p.offset + (i - 1) * p.stride
 @inline origin(p::Origins, i::Integer) = @inbounds p.origins[i]
+"The trailing origin, or `-1` when there are none. Readable on the host wherever the list itself is not."
+last_origin(p::Progression) = p.count == 0 ? -1 : p.offset + (p.count - 1) * p.stride
+last_origin(p::Origins) = p.last
 
 Base.:(==)(a::Positions, b::Positions) = origins(a) == origins(b)
 Base.hash(p::Positions, h::UInt) = hash(collect(origins(p)), hash(Positions, h))
@@ -89,7 +95,7 @@ end
 const Window{N} = NTuple{N,AxisWindow}
 
 # Explicit origins live in an array, so a window only reaches a device kernel after adapting.
-Adapt.adapt_structure(to, p::Origins) = (v = Adapt.adapt(to, p.origins); Origins{typeof(v)}(v))
+Adapt.adapt_structure(to, p::Origins) = (v = Adapt.adapt(to, p.origins); Origins{typeof(v)}(v, p.last))
 Adapt.adapt_structure(to, aw::AxisWindow) =
     (p = Adapt.adapt(to, aw.pos); AxisWindow{typeof(p)}(aw.extent, aw.size, p, aw.partial))
 
@@ -108,7 +114,7 @@ is_tiled(aw::AxisWindow) = aw.pos isa Progression && aw.pos.stride == aw.size
 canonicalize(aw::AxisWindow) = aw.partial && uniform_length(aw) ? AxisWindow(aw.extent, aw.size, aw.pos, false) : aw
 
 "`true` when every window holds exactly `size` cells."
-uniform_length(aw::AxisWindow) = nwindows(aw) == 0 || origins(aw)[end] + aw.size <= aw.extent
+uniform_length(aw::AxisWindow) = nwindows(aw) == 0 || last_origin(aw.pos) + aw.size <= aw.extent
 uniform_length(w::Window) = all(uniform_length, w)
 "Output shape of an N-D window."
 shape(w::Window{N}) where {N} = map(nwindows, w)

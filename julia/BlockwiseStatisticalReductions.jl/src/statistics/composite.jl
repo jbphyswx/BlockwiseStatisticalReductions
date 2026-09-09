@@ -2,7 +2,8 @@
     Composite{M<:Tuple,B}(members::M)
 
 Product of member accumulators over one observation of several input fields. `B` is a tuple with one
-`NTuple{K,Int}` per member naming the input-field positions that member binds. Satisfies the whole
+`NTuple{K,Int}` per member naming the positions that member binds among the fields the composite is
+handed, which are the fields it reads in ascending container order ([`assemble`](@ref)). Satisfies the whole
 accumulator interface member-wise; its two-phase protocol fuses the phases of all members, so a
 composite costs at most two passes over its children.
 """
@@ -117,12 +118,16 @@ resolve_bindings(tag::AbstractStatistic, fieldnames::Tuple) = map(f -> _field_in
 
 """
     assemble(stats, fieldnames::Tuple, ::Type{Tin}, ::Type{Tacc})
-        -> (CompositeType, routing::Tuple{Vararg{Val}}, names::Tuple{Vararg{Symbol}}, result_eltypes::Tuple)
+        -> (CompositeType, routing, names, result_eltypes, used::Tuple{Vararg{Int}})
 
 Composite accumulator type serving every tag in `stats` over input fields `fieldnames`, with each tag
 routed (by `Val` member index) to the member that finalizes it. Members with identical bindings that
 another member subsumes are dropped. A `NamedTuple` of tags takes its result names from the keys, a
 `Tuple` from each tag's own [`name`](@ref).
+
+`used` lists the fields of `fieldnames` the composite reads, ascending. Only those are handed to the
+kernels, and the composite's own bindings index *that* tuple — so a statistic of the fourth field of a
+container binds position 1 when it is the only field read.
 """
 assemble(stats::Tuple, fieldnames::Tuple, ::Type{Tin}, ::Type{Tacc}) where {Tin,Tacc} =
     _assemble(stats, map(name, stats), fieldnames, Tin, Tacc)
@@ -139,11 +144,15 @@ function _assemble(stats::Tuple, names::Tuple, fieldnames::Tuple, ::Type{Tin}, :
     candidates = unique(collect(zip(natural, bound)))
     kept = filter(p -> !any(q -> q !== p && q[2] == p[2] && subsumes(q[1], p[1]), candidates), candidates)
     M = Tuple{(p[1] for p in kept)...}
-    B = Tuple(p[2] for p in kept)
+    # The kernels are handed only the fields the composite reads, so its bindings are positions in that
+    # narrowed tuple rather than in the caller's container.
+    used = sort!(unique!(collect(Iterators.flatten(bound))))
+    at = Dict(f => i for (i, f) in enumerate(used))
+    B = Tuple(Tuple(at[f] for f in p[2]) for p in kept)
     routing = ntuple(k -> Val(_member_for(natural[k], bound[k], kept)), length(stats))
     allunique(names) || throw(ArgumentError("duplicate result names $(names); pass stats as a NamedTuple to name them"))
     outs = map(s -> result_eltype(s, Tin), stats)
-    return Composite{M,B}, routing, names, outs
+    return Composite{M,B}, routing, names, outs, Tuple(used)
 end
 
 function _member_for(acc::Type, binding::Tuple, kept::Vector)

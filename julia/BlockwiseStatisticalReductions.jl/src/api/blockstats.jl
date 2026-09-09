@@ -28,7 +28,7 @@ function _run_finalizers!(steps::Vector{Any}, shifts::Tuple, backend)
     return nothing
 end
 
-struct Prepared{N,C<:AbstractAccumulator,ST<:Tuple,RT<:Tuple,BK,WS,R<:ScaleResults{N},SH,WT,SK}
+struct Prepared{N,C<:AbstractAccumulator,ST<:Tuple,RT<:Tuple,BK,WS,R<:ScaleResults{N},SH,WT,SK,RD}
     plan::Plan{N}
     workspace::WS
     stats::ST
@@ -39,6 +39,7 @@ struct Prepared{N,C<:AbstractAccumulator,ST<:Tuple,RT<:Tuple,BK,WS,R<:ScaleResul
     shift::SH
     weights::WT
     skipnan::SK
+    reads::RD
     fieldnames::NTuple{<:Any,Symbol}
     input_shape::NTuple{N,Int}
     in_bytes::Int
@@ -127,20 +128,20 @@ function prepare_on(fields, scales, backend::CB.AbstractLocalBackend; stats::Uni
     Cprobe, _, _, _ = assemble(stats, names, Tin, accumulation_eltype(Tin))
     shifting = _shifting(shift, Tin, Cprobe, acc_eltype)
     Tacc = acc_eltype !== nothing ? acc_eltype : (shifting ? Tin : accumulation_eltype(Tin))
-    C, routing, statnames, outs = assemble(stats, names, Tin, Tacc)
-    router = _bind_router(fs, C)
-    in_bytes = _in_bytes(C, fs)
+    C, routing, statnames, outs, used = assemble(stats, names, Tin, Tacc)
+    reads = Val(used)
+    in_bytes = _in_bytes(fs, used)
     p = plan(shape, targets; backend = backend, in_bytes, acc_bytes = sizeof(C), memory_limit)
     ws = allocate(p, C, fs[1]; uniform_counts = !skipnan)
     eltypes = out_eltype === nothing ? outs : ntuple(_ -> out_eltype, length(stats))
     result = _allocate_results(p, targets, fs[1], statnames, eltypes, dimnames, spacing, into)
-    sh = _shift_state(shift, shifting, Tin, length(_bound_fields(C)))
+    sh = _shift_state(shift, shifting, Tin, length(used))
     tags = values(stats)
-    finalizers = _finalize_steps(p, ws, result, tags, routing, C, names)
+    finalizers = _finalize_steps(p, ws, result, tags, routing, used, names)
     skip = Val(skipnan)
     return Prepared{N,C,typeof(tags),typeof(routing),typeof(backend),typeof(ws),typeof(result),typeof(sh),
-                    typeof(wsrc),typeof(skip)}(
-        p, ws, tags, routing, backend, result, finalizers, sh, wsrc, skip, names, shape, in_bytes)
+                    typeof(wsrc),typeof(skip),typeof(reads)}(
+        p, ws, tags, routing, backend, result, finalizers, sh, wsrc, skip, reads, names, shape, in_bytes)
 end
 
 """
@@ -184,15 +185,14 @@ weight_factors(w::Tuple, ::Val{N}, dimnames) where {N} =
     (length(w) == N || throw(ArgumentError("$(length(w)) weight factor(s) for $N axes")); w)
 
 # Bytes of raw input one observation reads: only the fields the composite actually binds.
-_in_bytes(::Type{C}, fs::Tuple) where {C} = sum(i -> _read_bytes(fs[i]), _bound_fields(C); init = 0)
+_in_bytes(fs::Tuple, used::Tuple) = sum(i -> _read_bytes(fs[i]), used; init = 0)
 _read_bytes(f) = sizeof(eltype(f))
 # Separable weights are a handful of vectors read out of cache, not a stream from memory.
 _read_bytes(::SeparableWeights) = 0
-_bound_fields(::Type{Composite{M,B}}) where {M,B} = sort!(unique!(collect(Iterators.flatten(B))))
-# Kernels read fields positionally in binding order, so hand them the fields the composite binds. The
-# selection is fixed by the composite type, so it is generated rather than rebuilt on every call.
-@generated function _bind_router(fs::Tuple, ::Type{C}) where {C}
-    picks = [:(fs[$i]) for i in _bound_fields(C)]
+# The kernels are handed only the fields the composite reads, in ascending container order, which is the
+# order its bindings index. The selection is fixed by the request, so it is generated once.
+@generated function _bind_router(fs::Tuple, ::Val{used}) where {used}
+    picks = [:(fs[$i]) for i in used]
     return quote
         Base.@_inline_meta
         ($(picks...),)
@@ -242,7 +242,7 @@ function blockstats!(p::Prepared, fields)
         throw(DimensionMismatch("input shape $(size(fs[1])) does not match the prepared shape $(p.input_shape)"))
     length(fs) == _nuserfields(p) ||
         throw(ArgumentError("$(length(fs)) field(s) given for a request prepared with $(_nuserfields(p))"))
-    bound = _bind_router(_with_weights(fs, p.weights), _composite(p))
+    bound = _bind_router(_with_weights(fs, p.weights), p.reads)
     sh = _update_shift!(p.shift, bound, p.backend)
     run!(p.workspace, p.plan, _skipping(_apply_shift(bound, sh), p.skipnan), p.backend)
     _run_finalizers!(p.finalizers, sh, p.backend)
@@ -282,8 +282,7 @@ end
 # One step per (requested window, statistic), resolving the composite member, the output array and the
 # positions of the tag's fields within the request's shift tuple.
 function _finalize_steps(p::Plan, ws::Workspace, result::ScaleResults, stats::Tuple, routing::Tuple,
-                         ::Type{C}, names::Tuple) where {C}
-    bound = _bound_fields(C)
+                         bound::Tuple, names::Tuple)
     steps = Any[]
     for (j, k) in enumerate(p.outputs)
         accs = node_storage(ws, k)

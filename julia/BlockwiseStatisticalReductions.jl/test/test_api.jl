@@ -67,6 +67,40 @@ Test.@testset "api" begin
         Test.@test rp[(8, 8)].cov ≈ brute2(Statistics.cov, u, v, BSR.windows(rp)[1])
     end
 
+    Test.@testset "a field's position in the container does not matter" begin
+        # Visibly different fields, so reading the wrong one cannot look right by accident.
+        f = (a = 1 .+ 0.01 .* randn(8, 6), b = 2 .+ 0.01 .* randn(8, 6),
+             c = 3 .+ 0.01 .* randn(8, 6), d = 4 .+ 0.01 .* randn(8, 6))
+        t = (2, 2)
+        win = only(BSR.windows(BSR.blockstats(f, [t]; stats = (BSR.Mean(:a),))))
+        for k in keys(f)
+            r = BSR.blockstats(f, [t]; stats = (m = BSR.Mean(k),))
+            Test.@test r[t].m ≈ brute(Statistics.mean, f[k], win)
+        end
+        # Bound sets that do not begin at the first field, and that skip fields.
+        r = BSR.blockstats(f, [t]; stats = (mc = BSR.Mean(:c), md = BSR.Mean(:d)))
+        Test.@test r[t].mc ≈ brute(Statistics.mean, f.c, win)
+        Test.@test r[t].md ≈ brute(Statistics.mean, f.d, win)
+        r = BSR.blockstats(f, [t]; stats = (n = BSR.Count(), cv = BSR.Cov(:c, :d)))
+        Test.@test r[t].cv ≈ brute2(Statistics.cov, f.c, f.d, win)
+        Test.@test all(==(4), r[t].n)
+        # Binding order is the tag's, not the container's.
+        Test.@test BSR.blockstats(f, [t]; stats = (cv = BSR.Cov(:d, :b),))[t].cv ≈
+                   brute2(Statistics.cov, f.d, f.b, win)
+        # An unused extra field changes nothing.
+        five = (f..., spare = randn(8, 6))
+        Test.@test BSR.blockstats(five, [t]; stats = (m = BSR.Mean(:c),))[t].m ==
+                   BSR.blockstats(f, [t]; stats = (m = BSR.Mean(:c),))[t].m
+        # The shift and the weight field line up with the bound fields, not the container's.
+        w = rand(8, 6) .+ 0.5
+        rw = BSR.blockstats(f, [t]; stats = (m = BSR.Mean(:d),), weights = w, backend = CB.SerialBackend())
+        Test.@test rw[t].m ≈ brute2((v, o) -> sum(o .* v) / sum(o), f.d, w, win)
+        off = map(x -> Float32.(x), merge(f, (d = f.d .+ 1e7,)))
+        rs = BSR.blockstats(off, [t]; stats = (md = BSR.Mean(:d), mb = BSR.Mean(:b)))
+        Test.@test rs[t].md ≈ brute(Statistics.mean, off.d, win) rtol = 1e-5
+        Test.@test rs[t].mb ≈ brute(Statistics.mean, off.b, win) rtol = 1e-5
+    end
+
     Test.@testset "central co-moments over several fields" begin
         u = randn(32, 24); v = randn(32, 24) .* 2; w = randn(32, 24) .- 1
         r = BSR.blockstats((u = u, v = v, w = w), [(8, 8), (8, 12)];

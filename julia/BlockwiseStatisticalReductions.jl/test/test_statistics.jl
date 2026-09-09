@@ -17,6 +17,8 @@ const ALL_ACCS = (
 samples_for(::Type{A}) where {A} =
     (k = BSR.arity(A); k == 1 ? randn(64) : [ntuple(_ -> randn(), k) for _ in 1:64])
 
+write_bytes(aa, a) = @allocated setindex!(aa, a, 1)
+
 # BigFloat reference of the population moments of `x` (and cross moment with `y`).
 function reference(x::AbstractVector, y::AbstractVector = x)
     bx, by = BigFloat.(x), BigFloat.(y)
@@ -271,6 +273,14 @@ Test.@testset "statistics algebra" begin
         m[1] = BSR.lift(BSR.RawMomentsAcc{3,Float64}, (2.0,))
         Test.@test m[1].S == (2.0, 4.0, 8.0)
         Test.@test BSR.component(m, :S, :m2) isa Vector{Float64} && BSR.component(m, :S, :m2)[1] == 4.0
+
+        # A cell write reaches the leaf arrays without materializing any of the nesting on the way.
+        for A in ALL_ACCS, uniform in ((;), (n = 4,))
+            store = BSR.AccumulatorArray(A, zeros(1), (2,); uniform = uniform)
+            a = BSR.neutral(A)
+            write_bytes(store, a)
+            Test.@test write_bytes(store, a) == 0
+        end
 
         s = similar(aa)
         Test.@test size(s) == size(aa) && BSR.component(s, :mean) !== BSR.component(aa, :mean)

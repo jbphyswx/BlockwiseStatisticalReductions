@@ -51,33 +51,45 @@ end
     return aa
 end
 
-# Field loops are generated so every field type and index is a compile-time constant.
-function _field_exprs(T, expr)
-    out = Expr[]
-    for k in 1:fieldcount(T)
-        push!(out, expr(k, fieldtype(T, k)))
+# The nesting is walked while the code is generated, so one body reaches every leaf and nothing between
+# the accumulator and a component array is ever an argument the compiler has to materialize.
+_has_leaves(::Type{T}) where {T} = T <: AbstractAccumulator || T <: Tuple
+_component(::Type{T}, comps, k) where {T} =
+    Expr(:., comps, QuoteNode(T <: Tuple ? _member_names(Val(fieldcount(T)))[k] : fieldname(T, k)))
+
+function _read_expr(::Type{T}, comps) where {T}
+    _has_leaves(T) || return :(_load($comps, i))
+    fields = Any[_read_expr(fieldtype(T, k), _component(T, comps, k)) for k in 1:fieldcount(T)]
+    return T <: Tuple ? Expr(:tuple, fields...) : Expr(:call, T, fields...)
+end
+function _write_exprs!(out, ::Type{T}, comps, val) where {T}
+    if _has_leaves(T)
+        for k in 1:fieldcount(T)
+            _write_exprs!(out, fieldtype(T, k), _component(T, comps, k), :(getfield($val, $k)))
+        end
+    else
+        push!(out, :(_store!($comps, $val, i)))
     end
     return out
 end
-_read_expr(T, wrap) = quote
-    Base.@_inline_meta
-    $(wrap(_field_exprs(T, (k, Tk) -> :(_read($Tk, comps[$k], i)))))
-end
-_write_expr(T, getter) = quote
-    Base.@_inline_meta
-    $(_field_exprs(T, (k, Tk) -> :(_write!($Tk, comps[$k], $(getter(k)), i)))...)
-    return nothing
-end
 
-@generated _read(::Type{A}, comps::NamedTuple, i) where {A<:AbstractAccumulator} = _read_expr(A, fields -> :($A($(fields...))))
-@generated _read(::Type{M}, comps::NamedTuple, i) where {M<:Tuple} = _read_expr(M, fields -> :(($(fields...),)))
-@inline _read(::Type{T}, c::AbstractArray, i) where {T} = @inbounds c[i]
-@inline _read(::Type{T}, c::Uniform, i) where {T} = c.value
-
-@generated _write!(::Type{A}, comps::NamedTuple, a, i) where {A<:AbstractAccumulator} = _write_expr(A, k -> :(getfield(a, $k)))
-@generated _write!(::Type{M}, comps::NamedTuple, t::Tuple, i) where {M<:Tuple} = _write_expr(M, k -> :(t[$k]))
-@inline _write!(::Type{T}, c::AbstractArray, v, i) where {T} = (@inbounds c[i] = v; nothing)
-@inline _write!(::Type{T}, ::Uniform, v, i) where {T} = nothing
+@generated function _read(::Type{A}, comps::NamedTuple, i) where {A<:AbstractAccumulator}
+    return quote
+        Base.@_inline_meta
+        $(_read_expr(A, :comps))
+    end
+end
+@generated function _write!(::Type{A}, comps::NamedTuple, a, i) where {A<:AbstractAccumulator}
+    return quote
+        Base.@_inline_meta
+        $(_write_exprs!(Any[], A, :comps, :a)...)
+        return nothing
+    end
+end
+@inline _load(c::AbstractArray, i) = @inbounds c[i]
+@inline _load(c::Uniform, i) = c.value
+@inline _store!(c::AbstractArray, v, i) = (@inbounds c[i] = v; nothing)
+@inline _store!(::Uniform, v, i) = nothing
 
 """
     component(aa::AccumulatorArray, path::Symbol...) -> AbstractArray or Uniform

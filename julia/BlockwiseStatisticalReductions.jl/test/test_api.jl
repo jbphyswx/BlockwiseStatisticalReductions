@@ -67,6 +67,30 @@ Test.@testset "api" begin
         Test.@test rp[(8, 8)].cov ≈ brute2(Statistics.cov, u, v, BSR.windows(rp)[1])
     end
 
+    Test.@testset "central co-moments over several fields" begin
+        u = randn(32, 24); v = randn(32, 24) .* 2; w = randn(32, 24) .- 1
+        r = BSR.blockstats((u = u, v = v, w = w), [(8, 8), (8, 12)];
+                           stats = (uvw = BSR.CoMoment((:u, :v, :w)), u2v = BSR.CoMoment((:u, :v), (2, 1)),
+                                    m = BSR.Mean(:u), c = BSR.Cov(:u, :v)))
+        # ⟨∏(x - x̄)⟩ over the cells of each window, from the brute-force helper.
+        centred(cols...) = Statistics.mean(reduce((a, b) -> a .* b, (c .- Statistics.mean(c) for c in cols)))
+        for win in BSR.windows(r)
+            Test.@test r[win].uvw ≈ brute3(centred, u, v, w, win)
+            Test.@test r[win].u2v ≈ brute3((a, b, _) -> centred(a, a, b), u, v, w, win)
+            Test.@test r[win].c ≈ brute2(Statistics.cov, u, v, win)
+        end
+        # One base pass covers the three-field moment alongside everything else.
+        p = BSR.prepare((u = u, v = v, w = w), [(8, 8)];
+                        stats = (uvw = BSR.CoMoment((:u, :v, :w)), m = BSR.Mean(:u)), backend = CB.SerialBackend())
+        BSR.blockstats!(p, (u = u, v = v, w = w))
+        Test.@test length(BSR.base_nodes(p.plan)) == 1
+        Test.@test measure(p, (u = u, v = v, w = w)) == 0
+        # Repeating a field is the same as raising its exponent.
+        rep = BSR.blockstats((u = u, v = v), [(8, 8)];
+                             stats = (a = BSR.CoMoment((:u, :u, :v)), b = BSR.CoMoment((:u, :v), (2, 1))))
+        Test.@test rep[(8, 8)].a == rep[(8, 8)].b
+    end
+
     Test.@testset "raw numerators through Component" begin
         x = randn(32, 32); y = randn(32, 32)
         r = BSR.blockstats((x = x, y = y), [8];

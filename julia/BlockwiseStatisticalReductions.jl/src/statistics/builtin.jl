@@ -443,6 +443,119 @@ name(::Corr{F1,F2}) where {F1,F2} = _named(:corr, (F1, F2), (1, 2))
 subsumes(::Type{CorrAcc{T}}, ::Type{CovAcc{T}}) where {T} = true
 subsumes(::Type{CorrAcc{T}}, ::Type{ProductSumAcc{T}}) where {T} = true
 
+# ── Central co-moments over several slots (n, a mean per slot, a moment per slot subset) ──
+
+"Slot subsets a co-moment accumulator carries: every subset of `1:K` of size ≥ 2, smallest first."
+function comoment_subsets(K::Integer)
+    out = Vector{Int}[]
+    for m in 1:(2^K - 1)
+        s = [k for k in 1:K if (m >> (k - 1)) & 1 == 1]
+        length(s) >= 2 && push!(out, s)
+    end
+    sort!(out; by = s -> (length(s), s))
+    return out
+end
+"Number of subset moments a `K`-slot co-moment carries."
+ncomoments(K::Integer) = 2^K - K - 1
+
+"""
+    CoMomentAcc{K,L,T}
+
+Central co-moment of `K` slots: the count, a mean per slot, and `Σ ∏(x - x̄)` over every subset of the
+slots of size ≥ 2, in [`comoment_subsets`](@ref) order. The last is the co-moment over all of them.
+Repeating a slot raises that field's power, so `⟨a′²b′⟩` is the three-slot moment of `(a, a, b)`.
+"""
+struct CoMomentAcc{K,L,T} <: AbstractAccumulator
+    n::Int
+    means::NTuple{K,T}
+    M::NTuple{L,T}
+end
+arity(::Type{<:CoMomentAcc{K}}) where {K} = K
+acc_eltype(::Type{<:CoMomentAcc{K,L,T}}) where {K,L,T} = T
+neutral(::Type{CoMomentAcc{K,L,T}}) where {K,L,T} =
+    CoMomentAcc{K,L,T}(0, ntuple(_ -> zero(T), Val(K)), ntuple(_ -> zero(T), Val(L)))
+@inline lift(::Type{CoMomentAcc{K,L,T}}, xs::Tuple) where {K,L,T} =
+    CoMomentAcc{K,L,T}(1, ntuple(k -> T(xs[k]), Val(K)), ntuple(_ -> zero(T), Val(L)))
+
+# Moments of one part re-expressed about a different set of means, `d` being how far the part's own means
+# sit above the target. Expanding ∏((x - μᴬ) + d) subset by subset gives one term per subset of the slots,
+# and the terms whose subset has a single slot vanish because a first central moment is zero.
+@generated function _recentre(::Val{K}, mass::T, M::NTuple{L,T}, d::NTuple{K,T}) where {K,L,T}
+    subs = comoment_subsets(K)
+    at = Dict(s => i for (i, s) in enumerate(subs))
+    terms = Expr[]
+    for S in subs
+        parts = Expr[]
+        for mask in 0:(2^length(S) - 1)
+            U = [S[j] for j in 1:length(S) if (mask >> (j - 1)) & 1 == 1]
+            length(U) == 1 && continue
+            rest = setdiff(S, U)
+            base = isempty(U) ? :(mass) : :(M[$(at[U])])
+            push!(parts, isempty(rest) ? base : Expr(:call, :*, [:(d[$k]) for k in rest]..., base))
+        end
+        push!(terms, Expr(:call, :+, parts...))
+    end
+    return quote
+        Base.@_inline_meta
+        ($(terms...),)
+    end
+end
+
+@inline function Base.merge(a::CoMomentAcc{K,L,T}, b::CoMomentAcc{K,L,T}) where {K,L,T}
+    a.n == 0 && return b
+    b.n == 0 && return a
+    n = a.n + b.n
+    w = T(b.n) / T(n)
+    means = ntuple(k -> a.means[k] + (b.means[k] - a.means[k]) * w, Val(K))
+    da = ntuple(k -> a.means[k] - means[k], Val(K))
+    db = ntuple(k -> b.means[k] - means[k], Val(K))
+    A = _recentre(Val(K), T(a.n), a.M, da)
+    B = _recentre(Val(K), T(b.n), b.M, db)
+    return CoMomentAcc{K,L,T}(n, means, ntuple(i -> A[i] + B[i], Val(L)))
+end
+
+phases(::Type{<:CoMomentAcc}) = 2
+p1init(::Type{CoMomentAcc{K,L,T}}) where {K,L,T} = (0, ntuple(_ -> zero(T), Val(K)))
+@inline p1lift(::Type{CoMomentAcc{K,L,T}}, c) where {K,L,T} = (c.n, ntuple(k -> T(c.n) * c.means[k], Val(K)))
+@inline p1merge(::Type{CoMomentAcc{K,L,T}}, s, t) where {K,L,T} =
+    (s[1] + t[1], ntuple(k -> s[2][k] + t[2][k], Val(K)))
+@inline mid(::Type{CoMomentAcc{K,L,T}}, s) where {K,L,T} =
+    s[1] == 0 ? ntuple(_ -> zero(T), Val(K)) : ntuple(k -> s[2][k] / T(s[1]), Val(K))
+p2init(::Type{CoMomentAcc{K,L,T}}, m) where {K,L,T} = ntuple(_ -> zero(T), Val(L))
+@inline p2lift(::Type{CoMomentAcc{K,L,T}}, c, m) where {K,L,T} =
+    _recentre(Val(K), T(c.n), c.M, ntuple(k -> c.means[k] - m[k], Val(K)))
+@inline p2merge(::Type{<:CoMomentAcc{K,L}}, s, t) where {K,L} = ntuple(i -> s[i] + t[i], Val(L))
+@inline finish(::Type{CoMomentAcc{K,L,T}}, s1, m, s2) where {K,L,T} = CoMomentAcc{K,L,T}(s1[1], m, s2)
+shiftable(::Type{<:CoMomentAcc}) = true
+@inline unshift(a::CoMomentAcc{K,L,T}, s::Tuple{Vararg{Real}}) where {K,L,T} =
+    CoMomentAcc{K,L,T}(a.n, ntuple(k -> a.means[k] + s[k], Val(K)), a.M)
+
+"""
+    CoMoment(fields)
+    CoMoment(fields, exponents)
+
+The central co-moment `⟨∏(x - x̄)^p⟩` over several fields. `CoMoment((:u, :v, :w))` is `⟨u′v′w′⟩` and
+`CoMoment((:u, :w), (2, 1))` is `⟨u′²w′⟩`; an exponent repeats its field, so both are third order. Use
+`Cov` for the second-order case over two fields and `CentralMoments` for one field.
+"""
+struct CoMoment{S} <: AbstractStatistic end
+function CoMoment(fields::Tuple, exponents::Tuple = ntuple(_ -> 1, length(fields)))
+    length(exponents) == length(fields) ||
+        throw(ArgumentError("$(length(exponents)) exponent(s) for $(length(fields)) field(s)"))
+    all(e -> e isa Integer && e >= 1, exponents) || throw(ArgumentError("exponents must be integers ≥ 1, got $exponents"))
+    slots = Tuple(Iterators.flatten(Iterators.repeated(f, e) for (f, e) in zip(fields, exponents)))
+    length(slots) >= 3 ||
+        throw(ArgumentError("CoMoment is third order or higher: exponents sum to $(length(slots)). Use Cov for two fields at second order, or CentralMoments for one field."))
+    return CoMoment{slots}()
+end
+bindings(::CoMoment{S}) where {S} = S
+accumulator_type(::CoMoment{S}, ::Type{Tin}, ::Type{Tacc}) where {S,Tin,Tacc} =
+    CoMomentAcc{length(S),ncomoments(length(S)),Tacc}
+result_eltype(::CoMoment, ::Type{Tin}) where {Tin} = ratio_eltype(Tin)
+name(::CoMoment{S}) where {S} = _named(:comoment, S, ntuple(identity, length(S)))
+@inline finalize(::CoMoment, a::CoMomentAcc{K,L,T}, ::Type{Tout}) where {K,L,T,Tout} =
+    Tout(a.n == 0 ? T(NaN) : last(a.M) / T(a.n))
+
 # ── Component: any accumulator field as an output ──────────────────────────────
 
 "`Component(tag, field)` reports the raw accumulator field `field` of `tag`'s accumulator (e.g. `:M2`, `:C`)."

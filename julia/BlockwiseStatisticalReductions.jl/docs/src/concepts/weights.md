@@ -18,7 +18,12 @@ with no weighted form throws when the request is prepared:
 
 | Weighted | Not weighted |
 |---|---|
-| `Mean`, `Sum`, `Var`, `Std`, `Cov`, `Corr`, `ProductMean` | `Min`, `Max`, `Extrema`, `Moments`, `CentralMoments`, `Skewness`, `Kurtosis` |
+| `Mean`, `Sum`, `Var`, `Std`, `Cov`, `Corr`, `ProductMean`, `Moments`, `CentralMoments`, `Skewness`, `Kurtosis`, `CoMoment` | `Min`, `Max`, `Extrema` |
+
+Extrema are the exception on purpose rather than an omission: a nonzero weight does not change which
+observation is smallest, so a weighted extremum would be the unweighted one under another name. To leave
+observations out of an extremum, drop them with `skipnan` instead of weighting them — and the error says
+so, since `weights` is a property of the whole request and one unweightable tag would otherwise block it.
 
 `Count()` passes through unchanged: how many observations a window holds does not depend on their weights.
 For the effective sample size, ask for the total weight itself with `Component(Mean(), :W)`.

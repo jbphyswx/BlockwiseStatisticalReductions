@@ -29,11 +29,23 @@ Test.@testset "weights" begin
         Test.@test BSR.check_monoid(BSR.WVarAcc{Float64}; samples = obs1)
         Test.@test BSR.check_monoid(BSR.WCovAcc{Float64}; samples = obs2)
         Test.@test BSR.check_monoid(BSR.WCorrAcc{Float64}; samples = obs2)
-        for A in (BSR.WMeanAcc{Float64}, BSR.WVarAcc{Float64}, BSR.WCovAcc{Float64}, BSR.WCorrAcc{Float64})
+        Test.@test BSR.check_monoid(BSR.WCentralMomentsAcc{Float64}; samples = obs1)
+        Test.@test BSR.check_monoid(BSR.WRawMomentsAcc{3,Float64}; samples = obs1)
+        obs3 = [(randn(), randn(), randn(), rand() + 0.5) for _ in 1:32]
+        Test.@test BSR.check_monoid(BSR.WCoMomentAcc{3,BSR.ncomoments(3),Float64}; samples = obs3)
+        for A in (BSR.WMeanAcc{Float64}, BSR.WVarAcc{Float64}, BSR.WCovAcc{Float64}, BSR.WCorrAcc{Float64},
+                  BSR.WCentralMomentsAcc{Float64}, BSR.WRawMomentsAcc{3,Float64},
+                  BSR.WCoMomentAcc{3,BSR.ncomoments(3),Float64})
             Test.@test isbitstype(A)
-            Test.@test BSR.shiftable(A)
-            Test.@test BSR.arity(A) == (A <: Union{BSR.WMeanAcc,BSR.WVarAcc} ? 2 : 3)
+            Test.@test BSR.arity(A) == (A <: Union{BSR.WMeanAcc,BSR.WVarAcc,BSR.WCentralMomentsAcc,BSR.WRawMomentsAcc} ? 2 :
+                                        A <: BSR.WCoMomentAcc ? 4 : 3)
         end
+        # Raw power sums cannot be un-shifted, exactly as in the unweighted set.
+        for A in (BSR.WMeanAcc{Float64}, BSR.WVarAcc{Float64}, BSR.WCovAcc{Float64}, BSR.WCorrAcc{Float64},
+                  BSR.WCentralMomentsAcc{Float64}, BSR.WCoMomentAcc{3,BSR.ncomoments(3),Float64})
+            Test.@test BSR.shiftable(A)
+        end
+        Test.@test !BSR.shiftable(BSR.WRawMomentsAcc{3,Float64})
         # A zero weight contributes nothing at all.
         z = BSR.lift(BSR.WVarAcc{Float64}, (1e6, 0.0))
         a = BSR.lift(BSR.WVarAcc{Float64}, (2.0, 3.0))
@@ -78,10 +90,54 @@ Test.@testset "weights" begin
         end
     end
 
+    Test.@testset "higher moments against BigFloat" begin
+        x = randn(32, 24) .* 2 .+ 3
+        y = randn(32, 24) .- 1
+        z = randn(32, 24)
+        ω = rand(32, 24) .+ 0.5
+        scale = (4, 4)
+        wcm(v, o, k) = (m = sum(o .* v) / sum(o); sum(o .* (v .- m) .^ k))
+
+        st = (cm = BSR.CentralMoments(4), sk = BSR.Skewness(), ku = BSR.Kurtosis(),
+              mo = BSR.Moments(3), v = BSR.Var(), m = BSR.Mean())
+        r = BSR.blockstats(x, [scale]; stats = st, weights = ω, backend = CB.SerialBackend())
+        win = only(BSR.windows(r))
+        for k in 2:4
+            Test.@test map(u -> u[k - 1], r[win].cm) ≈ wbrute((v, o) -> wcm(v, o, k) / sum(o), x, ω, win)
+        end
+        Test.@test r[win].sk ≈ wbrute((v, o) -> sqrt(sum(o)) * wcm(v, o, 3) / wcm(v, o, 2)^1.5, x, ω, win)
+        Test.@test r[win].ku ≈ wbrute((v, o) -> sum(o) * wcm(v, o, 4) / wcm(v, o, 2)^2 - 3, x, ω, win)
+        for k in 1:3
+            Test.@test map(u -> u[k], r[win].mo) ≈ wbrute((v, o) -> sum(o .* v .^ k) / sum(o), x, ω, win)
+        end
+        # Var and Mean come off the order-4 accumulator by subsumption, still one member.
+        Test.@test r[win].v ≈ wbrute((v, o) -> wcm(v, o, 2) / (sum(o) - 1), x, ω, win)
+        Test.@test r[win].m ≈ wbrute(wmean, x, ω, win)
+
+        # Weighted co-moments over several fields.
+        rc = BSR.blockstats((a = x, b = y, c = z), [scale];
+                            stats = (abc = BSR.CoMoment((:a, :b, :c)), a2b = BSR.CoMoment((:a, :b), (2, 1))),
+                            weights = ω, backend = CB.SerialBackend())
+        function wco(slots)
+            out = Array{Float64,2}(undef, BSR.shape(win))
+            for I in CartesianIndices(out)
+                rs = ntuple(d -> BSR.window_range(win[d], I[d]), 2)
+                cols = map(a -> BigFloat.(vec(collect(view(a, rs...)))), (x, y, z))
+                o = BigFloat.(vec(collect(view(ω, rs...))))
+                mus = map(c -> sum(o .* c) / sum(o), cols)
+                out[I] = Float64(sum(o[i] * prod(cols[k][i] - mus[k] for k in slots) for i in eachindex(o)) / sum(o))
+            end
+            return out
+        end
+        Test.@test rc[win].abc ≈ wco((1, 2, 3))
+        Test.@test rc[win].a2b ≈ wco((1, 1, 2))
+    end
+
     Test.@testset "unit weights reproduce the unweighted request" begin
         x = randn(40, 32)
         st = (m = BSR.Mean(), v = BSR.Var(), vp = BSR.Var(; corrected = false),
-              vr = BSR.Var(; corrected = :reliability), s = BSR.Sum(), n = BSR.Count())
+              vr = BSR.Var(; corrected = :reliability), s = BSR.Sum(), n = BSR.Count(),
+              cm = BSR.CentralMoments(4), sk = BSR.Skewness(), ku = BSR.Kurtosis(), mo = BSR.Moments(3))
         a = BSR.blockstats(x, [(4, 4), (8, 8)]; stats = st, weights = ones(size(x)), backend = CB.SerialBackend())
         b = BSR.blockstats(x, [(4, 4), (8, 8)]; stats = st, backend = CB.SerialBackend())
         for win in BSR.windows(a), k in keys(st)
@@ -224,10 +280,17 @@ Test.@testset "weights" begin
 
     Test.@testset "rejected requests" begin
         x = randn(16, 12); ω = rand(16, 12) .+ 0.5
-        Test.@test_throws ArgumentError BSR.blockstats(x, [(4, 4)]; stats = (BSR.Min(),), weights = ω)
-        Test.@test_throws ArgumentError BSR.blockstats(x, [(4, 4)]; stats = (BSR.Extrema(),), weights = ω)
-        Test.@test_throws ArgumentError BSR.blockstats(x, [(4, 4)]; stats = (BSR.Skewness(),), weights = ω)
-        Test.@test_throws ArgumentError BSR.blockstats(x, [(4, 4)]; stats = (BSR.Moments(2),), weights = ω)
+        # Extrema are the only statistics with no weighted form, and they say why.
+        for tag in (BSR.Min(), BSR.Max(), BSR.Extrema())
+            e = try
+                BSR.blockstats(x, [(4, 4)]; stats = (tag,), weights = ω)
+                nothing
+            catch err
+                err
+            end
+            Test.@test e isa ArgumentError
+            Test.@test occursin("does not change which observation is smallest", sprint(showerror, e))
+        end
         Test.@test_throws DimensionMismatch BSR.blockstats(x, [(4, 4)]; stats = (BSR.Mean(),), weights = rand(4, 4))
         Test.@test_throws ArgumentError BSR.blockstats(x, [(4, 4)]; stats = (BSR.Mean(),), weights = (rand(16),))
         Test.@test_throws DimensionMismatch BSR.blockstats(x, [(4, 4)]; stats = (BSR.Mean(),),

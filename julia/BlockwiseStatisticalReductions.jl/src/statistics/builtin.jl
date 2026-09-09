@@ -480,7 +480,7 @@ neutral(::Type{CoMomentAcc{K,L,T}}) where {K,L,T} =
 # Moments of one part re-expressed about a different set of means, `d` being how far the part's own means
 # sit above the target. Expanding ∏((x - μᴬ) + d) subset by subset gives one term per subset of the slots,
 # and the terms whose subset has a single slot vanish because a first central moment is zero.
-@generated function _recentre(::Type{CoMomentAcc{K,L,T}}, n::Int, M::NTuple{L,T}, d::NTuple{K,T}) where {K,L,T}
+@generated function _recentre(::Val{K}, mass::T, M::NTuple{L,T}, d::NTuple{K,T}) where {K,L,T}
     subs = comoment_subsets(K)
     at = Dict(s => i for (i, s) in enumerate(subs))
     terms = Expr[]
@@ -490,7 +490,7 @@ neutral(::Type{CoMomentAcc{K,L,T}}) where {K,L,T} =
             U = [S[j] for j in 1:length(S) if (mask >> (j - 1)) & 1 == 1]
             length(U) == 1 && continue
             rest = setdiff(S, U)
-            base = isempty(U) ? :($T(n)) : :(M[$(at[U])])
+            base = isempty(U) ? :(mass) : :(M[$(at[U])])
             push!(parts, isempty(rest) ? base : Expr(:call, :*, [:(d[$k]) for k in rest]..., base))
         end
         push!(terms, Expr(:call, :+, parts...))
@@ -509,8 +509,8 @@ end
     means = ntuple(k -> a.means[k] + (b.means[k] - a.means[k]) * w, Val(K))
     da = ntuple(k -> a.means[k] - means[k], Val(K))
     db = ntuple(k -> b.means[k] - means[k], Val(K))
-    A = _recentre(CoMomentAcc{K,L,T}, a.n, a.M, da)
-    B = _recentre(CoMomentAcc{K,L,T}, b.n, b.M, db)
+    A = _recentre(Val(K), T(a.n), a.M, da)
+    B = _recentre(Val(K), T(b.n), b.M, db)
     return CoMomentAcc{K,L,T}(n, means, ntuple(i -> A[i] + B[i], Val(L)))
 end
 
@@ -523,7 +523,7 @@ p1init(::Type{CoMomentAcc{K,L,T}}) where {K,L,T} = (0, ntuple(_ -> zero(T), Val(
     s[1] == 0 ? ntuple(_ -> zero(T), Val(K)) : ntuple(k -> s[2][k] / T(s[1]), Val(K))
 p2init(::Type{CoMomentAcc{K,L,T}}, m) where {K,L,T} = ntuple(_ -> zero(T), Val(L))
 @inline p2lift(::Type{CoMomentAcc{K,L,T}}, c, m) where {K,L,T} =
-    _recentre(CoMomentAcc{K,L,T}, c.n, c.M, ntuple(k -> c.means[k] - m[k], Val(K)))
+    _recentre(Val(K), T(c.n), c.M, ntuple(k -> c.means[k] - m[k], Val(K)))
 @inline p2merge(::Type{<:CoMomentAcc{K,L}}, s, t) where {K,L} = ntuple(i -> s[i] + t[i], Val(L))
 @inline finish(::Type{CoMomentAcc{K,L,T}}, s1, m, s2) where {K,L,T} = CoMomentAcc{K,L,T}(s1[1], m, s2)
 shiftable(::Type{<:CoMomentAcc}) = true
